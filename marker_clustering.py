@@ -428,6 +428,8 @@ def plot_cluster_dissimilarity(D, true_labels, pred_km, pred_A, pred_B, save_pat
 
 
 if __name__ == "__main__":
+    from pathlib import Path
+    Path("plots").mkdir(exist_ok=True)
 
     C_clust, labels_clust = generate_cluster_markers(
     n_clusters=5, n_markers=100,
@@ -435,16 +437,16 @@ if __name__ == "__main__":
     p_inter=0.01,
     )
 
-    plot_dependency_matrix(C_clust, title="Cluster-structured C (5 clusters, 100 markers)", save_path="cluster_structured_c.png")
+    plot_dependency_matrix(C_clust, title="Cluster-structured C (5 clusters, 100 markers)", save_path="plots/cluster_structured_c.png")
 
-    best_k, pred_km, ari_km = assess_kmeans(C_clust, labels_clust, k_max=10, n_repeats=20, save_path="kmeans_comparison.png")
+    best_k, pred_km, ari_km = assess_kmeans(C_clust, labels_clust, k_max=10, n_repeats=20, save_path="plots/kmeans_comparison.png")
 
     (pred_A, ari_A), (pred_B, ari_B), D_lift = assess_umap_hdbscan(
-        C_clust, labels_clust, n_sim=5000, min_cluster_size=None, u=None, save_path="umap_hdbscan_comparison.png"
+        C_clust, labels_clust, n_sim=5000, min_cluster_size=None, u=None, save_path="plots/umap_hdbscan_comparison.png"
     )
 
     print(f"K-Means       ARI = {ari_km:.3f}  (inferred k = {best_k})")
     print(f"UMAP eucl.    ARI = {ari_A:.3f}")
     print(f"UMAP lift-dis ARI = {ari_B:.3f}")
 
-    plot_cluster_dissimilarity(D_lift, labels_clust, pred_km, pred_A, pred_B, save_path="cluster_dissimilarity_comparison.png")
+    plot_cluster_dissimilarity(D_lift, labels_clust, pred_km, pred_A, pred_B, save_path="plots/cluster_dissimilarity_comparison.png")

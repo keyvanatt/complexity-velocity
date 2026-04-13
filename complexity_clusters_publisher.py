@@ -152,7 +152,7 @@ def plot_complexity_vs_velocity_publishers(
 
 
 def run_publisher_analysis(
-    root: Path = Path("/Data/rc/causalitylink_sample"),
+    root: Path = Path("data/causalitylink_sample"),
     list_themes: Optional[List[str]] = None,
     marker_fraction: float = 1 / 3,
     cluster_id: int = 12,
@@ -160,7 +160,7 @@ def run_publisher_analysis(
     publishers_to_plot: Optional[List[str]] = None,
     eps_dbscan: float = 0.23,
     min_samples_dbscan: int = 30,
-    out_prefix: str = "complexity_vs_velocity_publishers",
+    out_prefix: str = "plots/complexity_vs_velocity_publishers",
 ) -> None:
     """End-to-end pipeline: load data, cluster markers, plot per-publisher complexity.
 
@@ -178,10 +178,11 @@ def run_publisher_analysis(
     if list_themes is None:
         list_themes = ["sante", "economie", "sport", "politique", "transport", "information"]
 
+    Path("plots").mkdir(exist_ok=True)
     filtered_marker_df = prepare_filtered_marker_table(root, None)
 
     journaux_themes: Dict[str, str] = (
-        pd.read_csv("journaux_themes.csv", index_col=0).squeeze().to_dict()
+        pd.read_csv("data/journaux_themes.csv", index_col=0).squeeze().to_dict()
     )
 
     selected_markers, conv, markers_journals = select_markers_by_theme(
@@ -226,8 +227,8 @@ def run_publisher_analysis(
 if __name__ == "__main__":
     np.random.seed(42)
     run_publisher_analysis(
-        root=Path("/Data/rc/causalitylink_sample"),
+        root=Path("data/causalitylink_sample"),
         cluster_id=12,           # cars cluster
         top_n_publishers=10,
-        out_prefix="complexity_vs_velocity_publishers",
+        out_prefix="plots/complexity_vs_velocity_publishers",
     )

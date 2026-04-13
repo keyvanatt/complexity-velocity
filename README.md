@@ -26,7 +26,10 @@ complexity-velocity/
 ├── peter_clark_scm.py              # Découverte de structure causale (algorithme PC)
 ├── kb_visualisation.py             # Visualisation interactive de l'arbre KB
 ├── data/
+│   ├── causalitylink_sample/       # Données CausalityLink (AVRO)
+│   ├── CausalityLinkPublishers.csv # Mapping publisher_id → label
 │   └── journaux_themes.csv         # Mapping éditeur → thème (santé, économie, sport…)
+├── plots/                          # Figures générées (créé automatiquement)
 └── requirement.txt
 ```
 
@@ -67,17 +70,18 @@ Outil interactif en ligne de commande pour explorer l'arbre hiérarchique d'un m
 
 ## Données attendues
 
-Le projet attend un répertoire (ex. `data/causalitylink_sample`) contenant :
+Toutes les données doivent être placées dans le dossier `data/` :
 ```
-causalitylink_sample/
-├── Markers/      # fichiers AVRO partitionnés par year=/month=
-├── Tree/         # fichiers AVRO de la hiérarchie des markers
-└── KB/           # base de connaissance (pour kb_visualisation)
+data/
+├── causalitylink_sample/
+│   ├── Markers/      # fichiers AVRO partitionnés par year=/month=
+│   ├── Tree/         # fichiers AVRO de la hiérarchie des markers
+│   └── KB/           # base de connaissance (pour kb_visualisation)
+├── CausalityLinkPublishers.csv   # colonnes : publisher, label
+└── journaux_themes.csv           # mapping publisher_label → thème
 ```
 
-Et deux fichiers CSV à la racine de travail :
-- `CausalityLinkPublishers.csv` — colonnes `publisher`, `label`
-- `journaux_themes.csv` — mapping `publisher_label` → thème
+Les figures sont sauvegardées automatiquement dans `plots/` (créé à la première exécution).
 
 ## Installation
 
