@@ -1,1 +1,3 @@
 data/causalitylink_sample/
+__pycache__/
+.venv/
