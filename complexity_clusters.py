@@ -9,8 +9,8 @@ import polars as pl
 import seaborn as sns
 from causalityTable import CausalityTable
 from scipy import stats
+from scipy.sparse import csr_matrix
 from sklearn.cluster import DBSCAN
-from tqdm import tqdm
 from umap import UMAP  # pip install umap-learn
 
 
@@ -34,28 +34,33 @@ def compute_cocitation_probability_matrix(
         square numpy array (n_markers x n_markers) of cocitation probabilities (counts / n_articles).
     """
     n_markers = len(markers)
-    cm_counts = np.zeros((n_markers, n_markers), dtype=np.int64)
 
-
-    # filter rows to selected markers and group markers per article
+    # filter rows to selected markers only
     df_filtered = df.filter(pl.col("marker").is_in(markers))
-    df_grouped = df_filtered.group_by("id").agg(pl.col("marker").unique().alias("markers"))
-
-    # total unique articles
     n_articles = int(df_filtered["id"].n_unique())
-    logger.info("Computing cocitation counts for %d entries, %d markers, %d articles", 
-                len(df_filtered), df_filtered["marker"].n_unique(), df_filtered["id"].n_unique())
+    logger.info(
+        "Computing cocitation counts for %d entries, %d markers, %d articles",
+        len(df_filtered), df_filtered["marker"].n_unique(), n_articles,
+    )
 
-    conv_local = conv
-    for marker_list in tqdm(df_grouped["markers"].to_list(), desc="computing cocitation counts"):
-        if not marker_list:
-            continue
-        idxs = np.array([conv_local[m] for m in marker_list if m in conv_local], dtype=np.int64)
-        if idxs.size == 0:
-            continue
-        cm_counts[np.ix_(idxs, idxs)] += 1
+    # map article ids -> contiguous integers
+    article_ids = df_filtered["id"].unique()
+    article_conv = {aid: i for i, aid in enumerate(article_ids.to_list())}
+    n_art = len(article_conv)
 
-    # convert to probabilities
+    # build flat arrays for sparse matrix construction (no Python list-of-lists)
+    marker_col = df_filtered["marker"].to_list()
+    id_col = df_filtered["id"].to_list()
+    row_indices = np.fromiter((article_conv[a] for a in id_col), dtype=np.int32, count=len(id_col))
+    col_indices = np.fromiter((conv[m] for m in marker_col), dtype=np.int32, count=len(marker_col))
+
+    # article-marker indicator matrix A  (n_art x n_markers)
+    data = np.ones(len(row_indices), dtype=np.float32)
+    A = csr_matrix((data, (row_indices, col_indices)), shape=(n_art, n_markers))
+
+    # co-citation counts = A^T @ A  (sparse -> dense, shape n_markers x n_markers)
+    cm_counts = (A.T @ A).toarray()
+
     with np.errstate(divide="ignore", invalid="ignore"):
         cm_prob = cm_counts.astype(float) / float(max(1, n_articles))
 
@@ -97,14 +102,20 @@ def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] =
     Expects files under `path` and CSVs `CausalityLinkPublishers.csv`, `journaux_themes.csv` in working dir.
     Returns a Polars DataFrame ready for further analysis.
     """
+    logger.info("Loading Markers AVRO files from %s...", path / "Markers")
     markerTable = CausalityTable(path / "Markers")
     markerTable.load_one_mounth(year=2025, month=1)
+    logger.info("Markers loaded: %d rows", len(markerTable.df))
 
+    logger.info("Loading Tree AVRO files from %s...", path / "Tree")
     treeTable = CausalityTable(path / "Tree")
     treeTable.load_data(date_parsing=False)
+    logger.info("Tree loaded: %d rows", len(treeTable.df))
 
+    logger.info("Loading publishers and journal themes CSV...")
     publishers = pl.read_csv("data/CausalityLinkPublishers.csv")
     journaux_themes = pd.read_csv("data/journaux_themes.csv", index_col=0).to_dict()["theme"]
+    logger.info("Publishers: %d entries, journal themes: %d entries", len(publishers), len(journaux_themes))
 
     logger.info("Initial marker table: %d entries, %d markers, %d articles", 
                 len(markerTable.df), markerTable.df["marker"].n_unique(), markerTable.df["id"].n_unique())
@@ -152,7 +163,8 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
     """
     if themes is None:
         themes = filtered_marker_df["journal_theme"].unique().to_list()
-    
+
+    logger.info("Selecting markers for themes: %s", themes)
     selected_markers_df = (
         filtered_marker_df
         .filter(pl.col("journal_theme").is_in(themes))["marker", "publisher_label"]
@@ -160,6 +172,7 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
         .agg(pl.col("publisher_label").unique().alias("publishers_label"), pl.col("marker").count().alias("marker_count"))
     )
     keep_n = max(1, int(len(selected_markers_df) * fraction))
+    logger.info("Total distinct markers in themes: %d — keeping top %d (fraction=%.2f)", len(selected_markers_df), keep_n, fraction)
     if top:
         selected_markers_df = selected_markers_df.sort("marker_count", descending=True).head(keep_n)
     else:
@@ -167,6 +180,7 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
     markers_journals = np.array(selected_markers_df["publishers_label"].to_list(), dtype=object)
     selected_markers = np.array(selected_markers_df["marker"].to_list())
     conv = {selected_markers[k]: int(k) for k in range(len(selected_markers))}
+    logger.info("Selected %d markers", len(selected_markers))
     return selected_markers, conv, markers_journals
 
 
@@ -248,9 +262,9 @@ def plot_complexity_vs_velocity(
         reg["kendall_tau"], reg["kendall_p"], reg["n"],
     )
 
-    # regression line over the valid range
+    # regression line: 2 endpoints are enough (straight line in log-log)
     valid = np.isfinite(complexities_values) & np.isfinite(velocities) & (complexities_values > 0) & (velocities > 0)
-    c_fit = np.linspace(complexities_values[valid].min(), complexities_values[valid].max(), 200)
+    c_fit = np.array([complexities_values[valid].min(), complexities_values[valid].max()])
     v_fit = np.exp(reg["beta0"]) * c_fit ** reg["beta1"]
 
     annotation = (
@@ -305,13 +319,16 @@ def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.nda
     epsilon = 1e-4
     velocities = np.array([lift_matrix[i, i] ** (-1) if lift_matrix[i, i] > 0 else np.nan for i in range(len(lift_matrix))])
     # safeguard and produce a symmetric non-negative distance matrix
+    logger.info("Building distance matrix (%dx%d)...", lift_matrix.shape[0], lift_matrix.shape[1])
     distance_matrix = np.log1p((lift_matrix + epsilon) ** (-1))
     distance_matrix[np.diag_indices_from(distance_matrix)] = 0
     distance_matrix = (distance_matrix + distance_matrix.T) / 2.0
     distance_matrix -= distance_matrix.min()
 
+    logger.info("Running UMAP (precomputed, %d markers)...", len(selected_markers))
     umap = UMAP(n_components=2, metric="precomputed", min_dist=0.10, random_state=42)
     X_latent = umap.fit_transform(distance_matrix)
+    logger.info("UMAP done.")
 
     plt.figure(figsize=(10, 8))
     plt.scatter(X_latent[:, 0], X_latent[:, 1], s=3, alpha=0.2)
@@ -325,11 +342,15 @@ def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.nda
         plt.show()
     plt.close()
 
+    logger.info("Running DBSCAN (eps=%.3f, min_samples=%d)...", eps_dbscan, min_samples_dbscan)
     dbscan = DBSCAN(metric="euclidean", eps=eps_dbscan, min_samples=min_samples_dbscan)
     dbscan.fit(X_latent)
+    labels = dbscan.labels_
+    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+    n_noise = int((labels == -1).sum())
+    logger.info("DBSCAN done: %d clusters, %d noise points", n_clusters, n_noise)
 
     plt.figure(figsize=(10, 8))
-    labels = dbscan.labels_
     norm = np.max(labels) if np.max(labels) > 0 else 1
     plt.scatter(X_latent[:, 0], X_latent[:, 1], c=labels / norm, cmap="gist_ncar", s=3, alpha=0.4)
 
@@ -388,34 +409,64 @@ def top_lifters(marker: str, lift_matrix: np.ndarray, conv: Dict[str, int], comp
     top_markers = [(list(conv.keys())[i], lifts[i]) for i in top_indices ]
     return top_markers
 
-def run_all(root: Path = Path("data/causalitylink_sample")) -> None:
+def run_all(root: Path = Path("data/causalitylink_sample"), cluster_id: Optional[int] = None) -> None:
     """Main pipeline: load data, select markers, compute matrices, plot and cluster.
 
     This function mirrors the previous top-level script but organizes steps and saves outputs.
+
+    Args:
+        root: Path to data root directory.
+        cluster_id: If provided, after clustering compute a sub-lift matrix for markers
+                    belonging to that DBSCAN cluster and plot complexity vs velocity within it.
     """
     Path("plots").mkdir(exist_ok=True)
 
-    logger.info("Preparing filtered marker table...")
+    logger.info("=== Step 1/5 : Loading and filtering data ===")
     list_themes = ["sante", "economie", "sport", "politique", "transport", "information"]
-    filtered_marker_df = prepare_filtered_marker_table(root,None)
+    filtered_marker_df = prepare_filtered_marker_table(root, None)
 
-    selected_markers, conv, markers_journals = select_markers_by_theme(filtered_marker_df, list_themes, fraction= 1 / 3)
+    logger.info("=== Step 2/5 : Selecting markers ===")
+    selected_markers, conv, markers_journals = select_markers_by_theme(filtered_marker_df, list_themes, fraction=1 / 3)
 
-    logger.info("Computing cocitation probabilities for %d markers", len(selected_markers))
+    logger.info("=== Step 3/5 : Computing cocitation matrix (%d markers) — this is the slow step ===", len(selected_markers))
     cocitation_matrix = compute_cocitation_probability_matrix(selected_markers, filtered_marker_df, conv)
 
-    logger.info("Computing lift matrix")
+    logger.info("=== Step 4/5 : Computing lift matrix and stats ===")
     lift_matrix = compute_lift_matrix(cocitation_matrix)
+    logger.info("Lift matrix computed (%dx%d)", lift_matrix.shape[0], lift_matrix.shape[1])
 
-    logger.info("Plotting complexity vs velocity")
+    logger.info("Plotting complexity vs velocity...")
     complexities, reg = plot_complexity_vs_velocity(lift_matrix, conv, selected_markers, out_prefix="plots/complexity_vs_velocity")
 
-    logger.info("Computing latent embedding and clustering")
-    X_latent, labels = compute_latent_and_cluster(lift_matrix, selected_markers, markers_journals, out_prefix="plots/projection_2d")
+    logger.info("=== Step 5/5 : UMAP + DBSCAN clustering ===")
+    X_latent, labels = compute_latent_and_cluster(lift_matrix, selected_markers, markers_journals, out_prefix="plots/projection_2d", eps_dbscan=0.25, min_samples_dbscan=50)
 
-    logger.info("All done.")
+    if cluster_id is not None:
+        logger.info("=== Sub-complexity analysis for cluster %d ===", cluster_id)
+        cluster_markers = markers_from_cluster(labels, cluster_id, selected_markers)
+        if len(cluster_markers) < 10:
+            logger.warning("Cluster %d has fewer than 10 markers (%d), skipping sub-analysis.", cluster_id, len(cluster_markers))
+        else:
+            logger.info("Cluster %d: %d markers — computing sub-lift matrix...", cluster_id, len(cluster_markers))
+            sub_lift_matrix, sub_conv = compute_sub_lift_matrix(cluster_markers, filtered_marker_df)
+            logger.info("Sub-lift matrix computed (%dx%d)", sub_lift_matrix.shape[0], sub_lift_matrix.shape[1])
+            out_prefix = f"plots/cluster_{cluster_id}_complexity_vs_velocity"
+            logger.info("Plotting cluster %d complexity vs velocity -> %s.png", cluster_id, out_prefix)
+            sub_complexities, sub_reg = plot_complexity_vs_velocity(
+                sub_lift_matrix, sub_conv, cluster_markers, out_prefix=out_prefix
+            )
+            logger.info("Cluster %d sub-analysis done.", cluster_id)
+
+    logger.info("=== All done. Plots saved in plots/ ===")
     return filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels
 
 
 if __name__ == "__main__":
-    filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels = run_all()
+
+    root = Path("data/causalitylink_sample")
+    cluster_id = 0
+   
+    filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels = run_all(
+        root=root,
+        cluster_id=cluster_id,  # set to None to skip sub-analysis
+    )
