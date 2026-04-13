@@ -8,6 +8,7 @@ import pandas as pd
 import polars as pl
 import seaborn as sns
 from causalityTable import CausalityTable
+from scipy import stats
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 from umap import UMAP  # pip install umap-learn
@@ -102,8 +103,8 @@ def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] =
     treeTable = CausalityTable(path / "Tree")
     treeTable.load_data(date_parsing=False)
 
-    publishers = pl.read_csv("CausalityLinkPublishers.csv")
-    journaux_themes = pd.read_csv("journaux_themes.csv", index_col=0).to_dict()["theme"]
+    publishers = pl.read_csv("data/CausalityLinkPublishers.csv")
+    journaux_themes = pd.read_csv("data/journaux_themes.csv", index_col=0).to_dict()["theme"]
 
     logger.info("Initial marker table: %d entries, %d markers, %d articles", 
                 len(markerTable.df), markerTable.df["marker"].n_unique(), markerTable.df["id"].n_unique())
@@ -169,6 +170,56 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
     return selected_markers, conv, markers_journals
 
 
+def fit_loglog_regression(
+    complexities_values: np.ndarray,
+    velocities: np.ndarray,
+    alpha: float = 0.05,
+) -> Dict:
+    """Fit a log-log OLS regression (velocity ~ complexity^beta1) and return statistics.
+
+    Returns a dict with keys:
+        beta0, beta1        : intercept and slope in log-log space
+        beta1_ci            : (low, high) confidence interval for beta1
+        r2                  : coefficient of determination
+        pearson_r, pearson_p: Pearson correlation on log-log values
+        kendall_tau, kendall_p: Kendall's tau on original values
+    """
+    c = np.asarray(complexities_values, dtype=float)
+    v = np.asarray(velocities, dtype=float)
+    valid = np.isfinite(c) & np.isfinite(v) & (c > 0) & (v > 0)
+    log_c = np.log(c[valid])
+    log_v = np.log(v[valid])
+    n = valid.sum()
+
+    # OLS in log-log space
+    result = stats.linregress(log_c, log_v)
+    beta1 = result.slope
+    beta0 = result.intercept
+    r2 = result.rvalue ** 2
+
+    # Confidence interval for beta1 (t-distribution, two-tailed)
+    t_crit = stats.t.ppf(1 - alpha / 2, df=n - 2)
+    beta1_ci = (beta1 - t_crit * result.stderr, beta1 + t_crit * result.stderr)
+
+    # Pearson on log-log
+    pearson_r, pearson_p = stats.pearsonr(log_c, log_v)
+
+    # Kendall's tau on original values
+    kendall_tau, kendall_p = stats.kendalltau(c[valid], v[valid])
+
+    return dict(
+        beta0=beta0,
+        beta1=beta1,
+        beta1_ci=beta1_ci,
+        r2=r2,
+        pearson_r=pearson_r,
+        pearson_p=pearson_p,
+        kendall_tau=kendall_tau,
+        kendall_p=kendall_p,
+        n=int(n),
+    )
+
+
 def plot_complexity_vs_velocity(
     lift_matrix: np.ndarray,
     conv: Dict[str, int],
@@ -177,26 +228,54 @@ def plot_complexity_vs_velocity(
     n_bins: int = 15,
 ):
     """Produce and save scatter and boxplot comparing complexity vs velocity.
-    Files saved: '{out_prefix}.png' and '{out_prefix}_categories.png'.
+
+    Fits a log-log OLS regression and annotates the plot with beta1, its 95% CI,
+    Pearson r and Kendall tau. Files saved: '{out_prefix}.png' and
+    '{out_prefix}_categories.png'.
     """
     complexities = {marker: get_complexity_fast(lift_matrix, conv, marker) for marker in selected_markers}
-    velocities = [lift_matrix[i, i] ** (-1) if lift_matrix[i, i] > 0 else np.nan for i in range(len(lift_matrix))]
+    velocities = np.array([lift_matrix[i, i] ** (-1) if lift_matrix[i, i] > 0 else np.nan for i in range(len(lift_matrix))])
 
-    complexities_values = list(complexities.values())
+    complexities_values = np.array(list(complexities.values()))
 
-    plt.figure()
-    plt.scatter(complexities_values, velocities)
-    plt.xlabel("Complexity")
-    plt.ylabel("Velocity")
-    plt.title("Marker Complexity vs Velocity (Log-Log Scale)")
-    plt.xscale("log")
-    plt.yscale("log")
-    plt.tight_layout()
+    # --- regression & stats ---
+    reg = fit_loglog_regression(complexities_values, velocities)
+    logger.info(
+        "Log-log regression: beta1=%.4f  95%%CI=[%.4f, %.4f]  R²=%.4f  "
+        "Pearson r=%.4f (p=%.2e)  Kendall tau=%.4f (p=%.2e)  n=%d",
+        reg["beta1"], reg["beta1_ci"][0], reg["beta1_ci"][1], reg["r2"],
+        reg["pearson_r"], reg["pearson_p"],
+        reg["kendall_tau"], reg["kendall_p"], reg["n"],
+    )
+
+    # regression line over the valid range
+    valid = np.isfinite(complexities_values) & np.isfinite(velocities) & (complexities_values > 0) & (velocities > 0)
+    c_fit = np.linspace(complexities_values[valid].min(), complexities_values[valid].max(), 200)
+    v_fit = np.exp(reg["beta0"]) * c_fit ** reg["beta1"]
+
+    annotation = (
+        f"β₁ = {reg['beta1']:.3f}  95% CI [{reg['beta1_ci'][0]:.3f}, {reg['beta1_ci'][1]:.3f}]\n"
+        f"R² = {reg['r2']:.3f}   Pearson r = {reg['pearson_r']:.3f}\n"
+        f"Kendall τ = {reg['kendall_tau']:.3f} (p={reg['kendall_p']:.2e})   n = {reg['n']}"
+    )
+
+    fig, ax = plt.subplots()
+    ax.scatter(complexities_values, velocities, s=4, alpha=0.4, label="markers")
+    ax.plot(c_fit, v_fit, color="red", linewidth=1.5, label=f"fit  β₁={reg['beta1']:.3f}")
+    ax.set_xlabel("Complexity")
+    ax.set_ylabel("Velocity")
+    ax.set_title("Marker Complexity vs Velocity (Log-Log Scale)")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.legend(fontsize=8)
+    ax.text(0.02, 0.02, annotation, transform=ax.transAxes, fontsize=7,
+            verticalalignment="bottom", bbox=dict(boxstyle="round,pad=0.3", alpha=0.15))
+    fig.tight_layout()
     if out_prefix != "SHOW":
-        plt.savefig(f"{out_prefix}.png")
+        fig.savefig(f"{out_prefix}.png")
     else:
         plt.show()
-    plt.close()
+    plt.close(fig)
 
     categories = pd.qcut(pd.Series(complexities_values).dropna(), n_bins, duplicates="drop")
     plt.figure()
@@ -212,7 +291,7 @@ def plot_complexity_vs_velocity(
         plt.show()
     plt.close()
 
-    return complexities
+    return complexities, reg
 
 
 
@@ -309,11 +388,13 @@ def top_lifters(marker: str, lift_matrix: np.ndarray, conv: Dict[str, int], comp
     top_markers = [(list(conv.keys())[i], lifts[i]) for i in top_indices ]
     return top_markers
 
-def run_all(root: Path = Path("/Data/rc/data/causalitylink_sample")) -> None:
+def run_all(root: Path = Path("data/causalitylink_sample")) -> None:
     """Main pipeline: load data, select markers, compute matrices, plot and cluster.
 
     This function mirrors the previous top-level script but organizes steps and saves outputs.
     """
+    Path("plots").mkdir(exist_ok=True)
+
     logger.info("Preparing filtered marker table...")
     list_themes = ["sante", "economie", "sport", "politique", "transport", "information"]
     filtered_marker_df = prepare_filtered_marker_table(root,None)
@@ -327,14 +408,14 @@ def run_all(root: Path = Path("/Data/rc/data/causalitylink_sample")) -> None:
     lift_matrix = compute_lift_matrix(cocitation_matrix)
 
     logger.info("Plotting complexity vs velocity")
-    complexities = plot_complexity_vs_velocity(lift_matrix, conv, selected_markers, out_prefix="complexity_vs_velocity")
+    complexities, reg = plot_complexity_vs_velocity(lift_matrix, conv, selected_markers, out_prefix="plots/complexity_vs_velocity")
 
     logger.info("Computing latent embedding and clustering")
-    X_latent, labels =compute_latent_and_cluster(lift_matrix, selected_markers,markers_journals, out_prefix="projection_2d")
+    X_latent, labels = compute_latent_and_cluster(lift_matrix, selected_markers, markers_journals, out_prefix="plots/projection_2d")
 
     logger.info("All done.")
-    return filtered_marker_df, selected_markers, conv, markers_journals,lift_matrix,complexities,labels
+    return filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels
 
 
 if __name__ == "__main__":
-    filtered_marker_df, selected_markers, conv, markers_journals,lift_matrix,complexities = run_all()
+    filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels = run_all()

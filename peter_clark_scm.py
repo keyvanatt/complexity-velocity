@@ -163,7 +163,8 @@ def build_and_save_final_results(cg, markers, complexities, filename, cluster_id
 # =============================================================================
 
 if __name__ == "__main__":
-    data_path = Path("/Data/rc/causalitylink_sample")
+    data_path = Path("data/causalitylink_sample")
+    Path("plots").mkdir(exist_ok=True)
     
     # 1. Clustering Global
     df_filtered, all_markers, cluster_labels = get_clusters(data_path)
@@ -240,7 +241,7 @@ if __name__ == "__main__":
             X_bin = X_bin.sample(n=120000, random_state=30)
         
         # Lancer PC sur les markers sélectionnés (max 25)
-        output_filename = f"causal_cluster{target_cluster}_{timestamp}.png"
+        output_filename = f"plots/causal_cluster{target_cluster}_{timestamp}.png"
         cg = pc(X_bin.to_numpy(), alpha=0.0005, indep_test='chisq', show_progress=True)
         
         # Sauvegarder les résultats
