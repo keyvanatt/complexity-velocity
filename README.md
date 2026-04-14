@@ -1,87 +1,97 @@
 # complexity-velocity
 
-Analyse de la complexité et de la vélocité des markers issus de la base CausalityLink.
+Analysis of the complexity and velocity of markers from the CausalityLink database.
 
-## Contexte
+## Context
 
-Un **marker** est un concept extrait d'articles de presse. Ce projet mesure deux propriétés de chaque marker à partir de leurs co-occurrences dans les articles :
+A **marker** is a concept extracted from news articles. This project measures two properties of each marker based on their co-occurrences across articles:
 
-- **Complexité** : degré d'interconnexion d'un marker avec les autres — calculée comme le lift moyen vers tous les autres markers.
-- **Vélocité** : fréquence d'apparition isolée d'un marker — calculée comme l'inverse du lift diagonal (1/P(marker)).
+- **Complexity**: degree of interconnection of a marker with others — computed as the sum of lifts towards all other markers.
+- **Velocity**: frequency of isolated appearance of a marker — computed as the inverse of its marginal probability (1/P(marker)).
 
-Le lift entre deux markers i et j est défini par :
+The lift between two markers i and j is defined as:
 
 ```
 lift(i,j) = P(i,j) / (P(i) * P(j))
 ```
 
-## Structure du projet
+## Project structure
 
 ```
 complexity-velocity/
-├── causalityTable.py               # Chargement des fichiers AVRO (markers, tree)
-├── complexity_clusters.py          # Pipeline principal : lift, complexité, UMAP, DBSCAN
-├── complexity_clusters_publisher.py # Analyse complexité/vélocité par éditeur
-├── marker_clustering.py            # Simulation et évaluation de méthodes de clustering
-├── peter_clark_scm.py              # Découverte de structure causale (algorithme PC)
-├── kb_visualisation.py             # Visualisation interactive de l'arbre KB
+├── causalityTable.py               # Loading AVRO files (markers, tree)
+├── complexity_clusters.py          # Main pipeline: lift, complexity, UMAP, DBSCAN
+├── complexity_clusters_publisher.py # Complexity/velocity analysis per publisher
+├── marker_clustering.py            # Simulation and benchmarking of clustering methods
+├── peter_clark_scm.py              # Causal structure discovery (PC algorithm)
+├── kb_visualisation.py             # Interactive KB tree explorer
+├── basevcx.py                      # Synthetic simulation: C matrix generators, lifts, visualisations
 ├── data/
-│   ├── causalitylink_sample/       # Données CausalityLink (AVRO)
-│   ├── CausalityLinkPublishers.csv # Mapping publisher_id → label
-│   └── journaux_themes.csv         # Mapping éditeur → thème (santé, économie, sport…)
-├── plots/                          # Figures générées (créé automatiquement)
+│   ├── causalitylink_sample/       # CausalityLink data (AVRO)
+│   ├── CausalityLinkPublishers.csv # publisher_id → label mapping
+│   └── journaux_themes.csv         # publisher_label → theme mapping (health, economy, sport…)
+├── plots/                          # Generated figures (created automatically)
 └── requirement.txt
 ```
 
-## Fichiers
+## Files
 
 ### `causalityTable.py`
-Classe `CausalityTable` — utilitaire de chargement de données AVRO. Supporte le chargement complet ou mois par mois.
+`CausalityTable` class — AVRO data loading utility. Supports full load or month-by-month loading.
 
 ### `complexity_clusters.py`
-Pipeline principal. Étapes :
-1. Chargement et filtrage des markers (sans pays, avec éditeur connu)
-2. Calcul de la matrice de co-citation puis de la matrice de lift
-3. Calcul des scores de complexité et vélocité par marker
-4. Réduction dimensionnelle UMAP sur la dissimilarité lift, clustering DBSCAN
-5. Visualisations : scatter log-log, boxplots par catégorie de complexité, projection 2D annotée
+Main pipeline. Steps:
+1. Load and filter markers (excluding country markers, keeping known publishers)
+2. Compute the co-citation matrix then the lift matrix
+3. Compute complexity and velocity scores per marker
+4. UMAP dimensionality reduction on lift dissimilarity, DBSCAN clustering
+5. Visualisations: log-log scatter, boxplots by complexity category, annotated 2D projection
 
 ### `complexity_clusters_publisher.py`
-Pour un cluster DBSCAN donné, recalcule la matrice de lift séparément pour chaque éditeur et trace le scatter complexité/vélocité avec une régression loi de puissance (fit log-log) par éditeur.
+For a given DBSCAN cluster, recomputes the lift matrix separately for each publisher and plots the complexity/velocity scatter with a power-law regression (log-log fit) per publisher.
 
 ### `marker_clustering.py`
-Benchmark sur données synthétiques. Génère une matrice de dépendance avec structure en clusters et compare trois méthodes :
-- **K-Means** (sélection de k par stabilité ARI)
-- **UMAP + HDBSCAN** en distance euclidéenne sur [C, Cᵀ]
-- **UMAP + HDBSCAN** en dissimilarité lift (matrice précomputée)
+Benchmark on synthetic data. Generates a dependency matrix with cluster structure and compares three methods:
+- **K-Means** (k selection by ARI stability)
+- **UMAP + HDBSCAN** with Euclidean distance on [C, Cᵀ]
+- **UMAP + HDBSCAN** with lift dissimilarity (precomputed matrix)
 
 ### `peter_clark_scm.py`
-Découverte de structure causale via l'algorithme **PC** (`causal-learn`, test χ²). Pour chaque cluster sélectionné :
-1. Calcule les complexités locales au cluster
-2. Si le cluster dépasse 25 markers, sélectionne les extrêmes (les moins et les plus complexes)
-3. Lance l'algorithme PC sur la matrice binaire de présence des markers par article
-4. Sauvegarde un graphe causal (NetworkX) et une matrice d'adjacence triée par complexité
+Causal structure discovery via the **PC** algorithm (`causal-learn`, χ² test). For each selected cluster:
+1. Computes local complexities within the cluster
+2. If the cluster exceeds 25 markers, selects the extremes (least and most complex)
+3. Runs the PC algorithm on the binary marker presence matrix per article
+4. Saves a causal graph (NetworkX) and an adjacency matrix sorted by complexity
 
 ### `kb_visualisation.py`
-Outil interactif en ligne de commande pour explorer l'arbre hiérarchique d'un marker dans la base de connaissance. Commandes :
-- Entrer un marker pour visualiser son arbre
-- Ajouter `#N` pour définir la profondeur (ex : `sport#3`)
-- Entrer `__exit__` pour quitter
+Interactive command-line tool for exploring a marker's hierarchical tree in the knowledge base. Commands:
+- Enter a marker name to visualise its tree
+- Append `#N` to set the depth (e.g. `sport#3`)
+- Enter `__exit__` to quit
 
-## Données attendues
+### `basevcx.py`
+Synthetic simulation to explore the complexity/velocity relationship on controlled data. Provides:
+- **Dependency matrix generators**: chain, tree, cliques, hierarchical, random, random DAG, fractal, funnel, skip-hierarchical, dense progressive, mostly-full, increasing-rank
+- **`simulate_markers`**: generates binary documents from a dependency matrix C and unary probabilities u
+- **`compute_depth_in_dag`**: depth of each node in the DAG
+- Lift computation, complexity scores (sum of lifts per marker), and associated visualisations (heatmaps, scatterplots, barplots)
 
-Toutes les données doivent être placées dans le dossier `data/` :
+Usable as a standalone script (`python basevcx.py`) or as an importable module.
+
+## Expected data
+
+All data must be placed in the `data/` folder:
 ```
 data/
 ├── causalitylink_sample/
-│   ├── Markers/      # fichiers AVRO partitionnés par year=/month=
-│   ├── Tree/         # fichiers AVRO de la hiérarchie des markers
-│   └── KB/           # base de connaissance (pour kb_visualisation)
-├── CausalityLinkPublishers.csv   # colonnes : publisher, label
-└── journaux_themes.csv           # mapping publisher_label → thème
+│   ├── Markers/      # AVRO files partitioned by year=/month=
+│   ├── Tree/         # AVRO files for the marker hierarchy
+│   └── KB/           # knowledge base (for kb_visualisation)
+├── CausalityLinkPublishers.csv   # columns: publisher, label
+└── journaux_themes.csv           # publisher_label → theme mapping
 ```
 
-Les figures sont sauvegardées automatiquement dans `plots/` (créé à la première exécution).
+Figures are automatically saved to `plots/` (created on first run).
 
 ## Installation
 
@@ -89,9 +99,9 @@ Les figures sont sauvegardées automatiquement dans `plots/` (créé à la premi
 pip install -r requirement.txt
 ```
 
-Dépendances principales : `polars`, `pandas`, `numpy`, `scikit-learn`, `umap-learn`, `hdbscan`, `matplotlib`, `seaborn`, `networkx`, `causal-learn`, `anytree`, `tqdm`.
+Main dependencies: `polars`, `pandas`, `numpy`, `scikit-learn`, `umap-learn`, `hdbscan`, `matplotlib`, `seaborn`, `networkx`, `causal-learn`, `anytree`, `tqdm`.
 
-## Utilisation rapide
+## Quick start
 
 ```python
 from pathlib import Path
