@@ -152,7 +152,7 @@ def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] =
     return filtered_marker_df
 
 
-def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[List[str]] = None, fraction: float = 1 / 3, top : bool = True):
+def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[List[str]] = None, fraction: float = 1 / 3, top: bool = True, seed: int = 42):
     """Select markers appearing in given journal themes and return markers array and conv mapping.
 
     Args:
@@ -164,19 +164,20 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
     if themes is None:
         themes = filtered_marker_df["journal_theme"].unique().to_list()
 
-    logger.info("Selecting markers for themes: %s", themes)
+    logger.info("Selecting markers for themes: %s", themes, )
     selected_markers_df = (
         filtered_marker_df
         .filter(pl.col("journal_theme").is_in(themes))["marker", "publisher_label"]
         .group_by("marker")
         .agg(pl.col("publisher_label").unique().alias("publishers_label"), pl.col("marker").count().alias("marker_count"))
     )
+    logger.info("Selected markers from %d publishers", selected_markers_df["publishers_label"].explode().n_unique())
     keep_n = max(1, int(len(selected_markers_df) * fraction))
     logger.info("Total distinct markers in themes: %d — keeping top %d (fraction=%.2f)", len(selected_markers_df), keep_n, fraction)
     if top:
         selected_markers_df = selected_markers_df.sort("marker_count", descending=True).head(keep_n)
     else:
-        selected_markers_df = selected_markers_df.sample(keep_n, shuffle=True)
+        selected_markers_df = selected_markers_df.sample(keep_n, shuffle=True, seed=seed)
     markers_journals = np.array(selected_markers_df["publishers_label"].to_list(), dtype=object)
     selected_markers = np.array(selected_markers_df["marker"].to_list())
     conv = {selected_markers[k]: int(k) for k in range(len(selected_markers))}
@@ -310,7 +311,7 @@ def plot_complexity_vs_velocity(
 
 
 def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.ndarray, markers_journals: np.ndarray, out_prefix: str = "projection_2d",
-                               eps_dbscan: float = 0.10, min_samples_dbscan: int = 20) -> Tuple[np.ndarray, np.ndarray]:
+                               eps_dbscan: float = 0.10, min_samples_dbscan: int = 20, seed: int = 42) -> Tuple[np.ndarray, np.ndarray]:
     """Compute latent 2D embedding (UMAP) from lift matrix-derived distances and run DBSCAN clustering.
 
     Saves projection and projection with DBSCAN into PNG files with given prefix.
@@ -326,7 +327,7 @@ def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.nda
     distance_matrix -= distance_matrix.min()
 
     logger.info("Running UMAP (precomputed, %d markers)...", len(selected_markers))
-    umap = UMAP(n_components=2, metric="precomputed", min_dist=0.10, random_state=42)
+    umap = UMAP(n_components=2, metric="precomputed", min_dist=0.10, random_state=seed)
     X_latent = umap.fit_transform(distance_matrix)
     logger.info("UMAP done.")
 
@@ -409,15 +410,37 @@ def top_lifters(marker: str, lift_matrix: np.ndarray, conv: Dict[str, int], comp
     top_markers = [(list(conv.keys())[i], lifts[i]) for i in top_indices ]
     return top_markers
 
-def run_all(root: Path = Path("data/causalitylink_sample"), cluster_id: Optional[int] = None) -> None:
-    """Main pipeline: load data, select markers, compute matrices, plot and cluster.
+def save_top_bottom_csv(complexities: Dict[str, float], out_path: str, top_n: int = 10) -> pd.DataFrame:
+    """Save a CSV with the top_n lowest and top_n highest markers by complexity.
 
-    This function mirrors the previous top-level script but organizes steps and saves outputs.
+    Returns the combined DataFrame.
+    """
+    df = (
+        pd.DataFrame.from_dict(complexities, orient="index", columns=["complexity"])
+        .rename_axis("marker")
+        .sort_values("complexity")
+    )
+    bottom = df.head(top_n).assign(rank="bottom")
+    top = df.tail(top_n).assign(rank="top")
+    result = pd.concat([bottom, top])
+    result.to_csv(out_path)
+    logger.info("Saved top/bottom %d markers to %s", top_n, out_path)
+    return result
+
+
+def run_all(
+    root: Path = Path("data/causalitylink_sample"),
+    cluster_ids: Optional[List[int]] = None,
+    all_clusters: bool = False,
+    seed: int = 42,
+) -> Tuple:
+    """Main pipeline: load data, select markers, compute matrices, plot and cluster.
 
     Args:
         root: Path to data root directory.
-        cluster_id: If provided, after clustering compute a sub-lift matrix for markers
-                    belonging to that DBSCAN cluster and plot complexity vs velocity within it.
+        cluster_ids: Explicit list of DBSCAN cluster IDs to analyse.
+        all_clusters: If True, run sub-analysis on every cluster found by DBSCAN (noise -1 excluded).
+                      Overrides cluster_ids.
     """
     Path("plots").mkdir(exist_ok=True)
 
@@ -426,7 +449,7 @@ def run_all(root: Path = Path("data/causalitylink_sample"), cluster_id: Optional
     filtered_marker_df = prepare_filtered_marker_table(root, None)
 
     logger.info("=== Step 2/5 : Selecting markers ===")
-    selected_markers, conv, markers_journals = select_markers_by_theme(filtered_marker_df, list_themes, fraction=1 / 3)
+    selected_markers, conv, markers_journals = select_markers_by_theme(filtered_marker_df, list_themes, fraction=1 / 3, seed=seed)
 
     logger.info("=== Step 3/5 : Computing cocitation matrix (%d markers) — this is the slow step ===", len(selected_markers))
     cocitation_matrix = compute_cocitation_probability_matrix(selected_markers, filtered_marker_df, conv)
@@ -435,27 +458,33 @@ def run_all(root: Path = Path("data/causalitylink_sample"), cluster_id: Optional
     lift_matrix = compute_lift_matrix(cocitation_matrix)
     logger.info("Lift matrix computed (%dx%d)", lift_matrix.shape[0], lift_matrix.shape[1])
 
-    logger.info("Plotting complexity vs velocity...")
+    logger.info("Plotting global complexity vs velocity...")
     complexities, reg = plot_complexity_vs_velocity(lift_matrix, conv, selected_markers, out_prefix="plots/complexity_vs_velocity")
 
     logger.info("=== Step 5/5 : UMAP + DBSCAN clustering ===")
-    X_latent, labels = compute_latent_and_cluster(lift_matrix, selected_markers, markers_journals, out_prefix="plots/projection_2d", eps_dbscan=0.25, min_samples_dbscan=50)
+    _, labels = compute_latent_and_cluster(lift_matrix, selected_markers, markers_journals, out_prefix="plots/projection_2d", eps_dbscan=0.25, min_samples_dbscan=50, seed=seed)
 
-    if cluster_id is not None:
-        logger.info("=== Sub-complexity analysis for cluster %d ===", cluster_id)
-        cluster_markers = markers_from_cluster(labels, cluster_id, selected_markers)
-        if len(cluster_markers) < 10:
-            logger.warning("Cluster %d has fewer than 10 markers (%d), skipping sub-analysis.", cluster_id, len(cluster_markers))
-        else:
+    ids_to_run: List[int] = sorted(int(l) for l in np.unique(labels) if l != -1) if all_clusters else (cluster_ids or [])
+    if ids_to_run:
+        logger.info("=== Sub-cluster analysis for clusters: %s ===", ids_to_run)
+        for cluster_id in ids_to_run:
+            logger.info("--- Cluster %d ---", cluster_id)
+            cluster_markers = markers_from_cluster(labels, cluster_id, selected_markers)
+            if len(cluster_markers) < 10:
+                logger.warning("Cluster %d has fewer than 10 markers (%d), skipping.", cluster_id, len(cluster_markers))
+                continue
             logger.info("Cluster %d: %d markers — computing sub-lift matrix...", cluster_id, len(cluster_markers))
             sub_lift_matrix, sub_conv = compute_sub_lift_matrix(cluster_markers, filtered_marker_df)
             logger.info("Sub-lift matrix computed (%dx%d)", sub_lift_matrix.shape[0], sub_lift_matrix.shape[1])
-            out_prefix = f"plots/cluster_{cluster_id}_complexity_vs_velocity"
-            logger.info("Plotting cluster %d complexity vs velocity -> %s.png", cluster_id, out_prefix)
-            sub_complexities, sub_reg = plot_complexity_vs_velocity(
-                sub_lift_matrix, sub_conv, cluster_markers, out_prefix=out_prefix
+
+            plot_prefix = f"plots/cluster_{cluster_id}_complexity_vs_velocity"
+            sub_complexities, _ = plot_complexity_vs_velocity(
+                sub_lift_matrix, sub_conv, cluster_markers, out_prefix=plot_prefix
             )
-            logger.info("Cluster %d sub-analysis done.", cluster_id)
+
+            csv_path = f"plots/cluster_{cluster_id}_top_bottom.csv"
+            save_top_bottom_csv(sub_complexities, csv_path)
+            logger.info("Cluster %d done.", cluster_id)
 
     logger.info("=== All done. Plots saved in plots/ ===")
     return filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels
@@ -464,9 +493,8 @@ def run_all(root: Path = Path("data/causalitylink_sample"), cluster_id: Optional
 if __name__ == "__main__":
 
     root = Path("data/causalitylink_sample")
-    cluster_id = 0
-   
+
     filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels = run_all(
         root=root,
-        cluster_id=cluster_id,  # set to None to skip sub-analysis
+        all_clusters=True,  # tous les clusters ; ou cluster_ids=[0, 1, 2] pour une sélection
     )
