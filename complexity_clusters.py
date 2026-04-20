@@ -9,8 +9,8 @@ import polars as pl
 import seaborn as sns
 from causalityTable import CausalityTable
 from scipy import stats
-from scipy.sparse import csr_matrix
 from sklearn.cluster import DBSCAN
+from tqdm import tqdm
 from umap import UMAP  # pip install umap-learn
 
 
@@ -34,33 +34,27 @@ def compute_cocitation_probability_matrix(
         square numpy array (n_markers x n_markers) of cocitation probabilities (counts / n_articles).
     """
     n_markers = len(markers)
+    cm_counts = np.zeros((n_markers, n_markers), dtype=np.int64)
 
-    # filter rows to selected markers only
+    # total unique articles
+    n_articles = int(df["id"].n_unique())
+
+    # filter rows to selected markers and group markers per article
     df_filtered = df.filter(pl.col("marker").is_in(markers))
-    n_articles = int(df_filtered["id"].n_unique())
-    logger.info(
-        "Computing cocitation counts for %d entries, %d markers, %d articles",
-        len(df_filtered), df_filtered["marker"].n_unique(), n_articles,
-    )
+    df_grouped = df_filtered.group_by("id").agg(pl.col("marker").unique().alias("markers"))
+    logger.info("Computing cocitation counts for %d entries, %d markers, %d articles",
+                len(df_filtered), df_filtered["marker"].n_unique(), df_filtered["id"].n_unique())
 
-    # map article ids -> contiguous integers
-    article_ids = df_filtered["id"].unique()
-    article_conv = {aid: i for i, aid in enumerate(article_ids.to_list())}
-    n_art = len(article_conv)
+    conv_local = conv
+    for marker_list in tqdm(df_grouped["markers"].to_list(), desc="computing cocitation counts"):
+        if not marker_list:
+            continue
+        idxs = np.array([conv_local[m] for m in marker_list if m in conv_local], dtype=np.int64)
+        if idxs.size == 0:
+            continue
+        cm_counts[np.ix_(idxs, idxs)] += 1
 
-    # build flat arrays for sparse matrix construction (no Python list-of-lists)
-    marker_col = df_filtered["marker"].to_list()
-    id_col = df_filtered["id"].to_list()
-    row_indices = np.fromiter((article_conv[a] for a in id_col), dtype=np.int32, count=len(id_col))
-    col_indices = np.fromiter((conv[m] for m in marker_col), dtype=np.int32, count=len(marker_col))
-
-    # article-marker indicator matrix A  (n_art x n_markers)
-    data = np.ones(len(row_indices), dtype=np.float32)
-    A = csr_matrix((data, (row_indices, col_indices)), shape=(n_art, n_markers))
-
-    # co-citation counts = A^T @ A  (sparse -> dense, shape n_markers x n_markers)
-    cm_counts = (A.T @ A).toarray()
-
+    # convert to probabilities
     with np.errstate(divide="ignore", invalid="ignore"):
         cm_prob = cm_counts.astype(float) / float(max(1, n_articles))
 
@@ -175,7 +169,7 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
     keep_n = max(1, int(len(selected_markers_df) * fraction))
     logger.info("Total distinct markers in themes: %d — keeping top %d (fraction=%.2f)", len(selected_markers_df), keep_n, fraction)
     if top:
-        selected_markers_df = selected_markers_df.sort("marker_count", descending=True).head(keep_n)
+        selected_markers_df = selected_markers_df.sort(["marker_count", "marker"], descending=[True, False]).head(keep_n)
     else:
         selected_markers_df = selected_markers_df.sample(keep_n, shuffle=True, seed=seed)
     markers_journals = np.array(selected_markers_df["publishers_label"].to_list(), dtype=object)
@@ -321,8 +315,7 @@ def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.nda
     velocities = np.array([lift_matrix[i, i] ** (-1) if lift_matrix[i, i] > 0 else np.nan for i in range(len(lift_matrix))])
     # safeguard and produce a symmetric non-negative distance matrix
     logger.info("Building distance matrix (%dx%d)...", lift_matrix.shape[0], lift_matrix.shape[1])
-    distance_matrix = np.log1p((lift_matrix + epsilon) ** (-1))
-    distance_matrix[np.diag_indices_from(distance_matrix)] = 0
+    distance_matrix = np.log1p((lift_matrix + epsilon) ** (-1) - velocities[:, None])
     distance_matrix = (distance_matrix + distance_matrix.T) / 2.0
     distance_matrix -= distance_matrix.min()
 
@@ -462,7 +455,7 @@ def run_all(
     complexities, reg = plot_complexity_vs_velocity(lift_matrix, conv, selected_markers, out_prefix="plots/complexity_vs_velocity")
 
     logger.info("=== Step 5/5 : UMAP + DBSCAN clustering ===")
-    _, labels = compute_latent_and_cluster(lift_matrix, selected_markers, markers_journals, out_prefix="plots/projection_2d", eps_dbscan=0.25, min_samples_dbscan=50, seed=seed)
+    _, labels = compute_latent_and_cluster(lift_matrix, selected_markers, markers_journals, out_prefix="plots/projection_2d", eps_dbscan=0.25, min_samples_dbscan=60, seed=seed)
 
     ids_to_run: List[int] = sorted(int(l) for l in np.unique(labels) if l != -1) if all_clusters else (cluster_ids or [])
     if ids_to_run:
