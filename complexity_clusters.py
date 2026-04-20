@@ -486,7 +486,7 @@ def run_all(
 if __name__ == "__main__":
 
     root = Path("data/causalitylink_sample")
-
+    np.random.seed(42)
     filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels = run_all(
         root=root,
         all_clusters=True,  # tous les clusters ; ou cluster_ids=[0, 1, 2] pour une sélection
