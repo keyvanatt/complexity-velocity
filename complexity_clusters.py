@@ -421,6 +421,77 @@ def save_top_bottom_csv(complexities: Dict[str, float], out_path: str, top_n: in
     return result
 
 
+def plot_cluster_distributions(
+    filtered_marker_df: pl.DataFrame,
+    selected_markers: np.ndarray,
+    lift_matrix: np.ndarray,
+    conv: Dict[str, int],
+    labels: np.ndarray,
+    global_reg: Dict,
+) -> None:
+    """Plot distributions of beta1, kendall tau, and pearson r across all clusters."""
+    from complexity_clusters import (
+        markers_from_cluster, compute_sub_lift_matrix,
+        get_complexity_fast, fit_loglog_regression
+    )
+
+    stats = {
+        'cluster_id': [-1],
+        'beta1': [global_reg['beta1']],
+        'kendall_tau': [global_reg['kendall_tau']],
+        'pearson_r': [global_reg['pearson_r']],
+    }
+
+    ids_to_run = sorted(int(l) for l in np.unique(labels) if l != -1)
+    for cluster_id in ids_to_run:
+        cluster_markers = markers_from_cluster(labels, cluster_id, selected_markers)
+        if len(cluster_markers) < 10:
+            logger.warning("Cluster %d has fewer than 10 markers, skipping.", cluster_id)
+            continue
+
+        sub_lift_matrix, sub_conv = compute_sub_lift_matrix(cluster_markers, filtered_marker_df)
+        sub_complexities = {marker: get_complexity_fast(sub_lift_matrix, sub_conv, marker) for marker in cluster_markers}
+        complexities_values = np.array(list(sub_complexities.values()))
+        velocities = np.array([sub_lift_matrix[i, i] ** (-1) if sub_lift_matrix[i, i] > 0 else np.nan for i in range(len(sub_lift_matrix))])
+
+        cluster_reg = fit_loglog_regression(complexities_values, velocities)
+        stats['cluster_id'].append(cluster_id)
+        stats['beta1'].append(cluster_reg['beta1'])
+        stats['kendall_tau'].append(cluster_reg['kendall_tau'])
+        stats['pearson_r'].append(cluster_reg['pearson_r'])
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    axes[0].hist(stats['beta1'], bins=10, edgecolor='black', alpha=0.7, color='steelblue')
+    axes[0].set_xlabel('β₁', fontsize=12)
+    axes[0].set_ylabel('Frequency', fontsize=12)
+    axes[0].set_title('Distribution of β₁ across Clusters', fontsize=12)
+    axes[0].grid(alpha=0.3)
+    axes[0].axvline(np.mean(stats['beta1']), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(stats["beta1"]):.3f}')
+    axes[0].legend()
+
+    axes[1].hist(stats['kendall_tau'], bins=10, edgecolor='black', alpha=0.7, color='darkorange')
+    axes[1].set_xlabel("Kendall's τ", fontsize=12)
+    axes[1].set_ylabel('Frequency', fontsize=12)
+    axes[1].set_title("Distribution of Kendall's τ across Clusters", fontsize=12)
+    axes[1].grid(alpha=0.3)
+    axes[1].axvline(np.mean(stats['kendall_tau']), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(stats["kendall_tau"]):.3f}')
+    axes[1].legend()
+
+    axes[2].hist(stats['pearson_r'], bins=10, edgecolor='black', alpha=0.7, color='green')
+    axes[2].set_xlabel('Pearson r', fontsize=12)
+    axes[2].set_ylabel('Frequency', fontsize=12)
+    axes[2].set_title('Distribution of Pearson r across Clusters', fontsize=12)
+    axes[2].grid(alpha=0.3)
+    axes[2].axvline(np.mean(stats['pearson_r']), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(stats["pearson_r"]):.3f}')
+    axes[2].legend()
+
+    plt.tight_layout()
+    plt.savefig('plots/distributions_beta1_kendall_pearson.png', dpi=150)
+    logger.info("Saved distribution plot to plots/distributions_beta1_kendall_pearson.png")
+    plt.close()
+
+
 def run_all(
     root: Path = Path("data/causalitylink_sample"),
     cluster_ids: Optional[List[int]] = None,
@@ -480,6 +551,11 @@ def run_all(
             logger.info("Cluster %d done.", cluster_id)
 
     logger.info("=== All done. Plots saved in plots/ ===")
+
+    if all_clusters or ids_to_run:
+        logger.info("=== Plotting cluster distributions ===")
+        plot_cluster_distributions(filtered_marker_df, selected_markers, lift_matrix, conv, labels, reg)
+
     return filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels
 
 
