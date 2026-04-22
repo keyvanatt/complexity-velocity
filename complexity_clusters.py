@@ -429,67 +429,82 @@ def plot_cluster_distributions(
     labels: np.ndarray,
     global_reg: Dict,
 ) -> None:
-    """Plot distributions of beta1, kendall tau, and pearson r across all clusters."""
-    from complexity_clusters import (
-        markers_from_cluster, compute_sub_lift_matrix,
-        get_complexity_fast, fit_loglog_regression
-    )
+    """Dot plots (vertical layout) of beta1, kendall tau, pearson r per cluster.
 
-    stats = {
-        'cluster_id': [-1],
-        'beta1': [global_reg['beta1']],
-        'kendall_tau': [global_reg['kendall_tau']],
-        'pearson_r': [global_reg['pearson_r']],
-    }
+    Also saves a comprehensive CSV with all cluster statistics.
+    """
+    rows: List[Dict] = []
 
     ids_to_run = sorted(int(l) for l in np.unique(labels) if l != -1)
     for cluster_id in ids_to_run:
         cluster_markers = markers_from_cluster(labels, cluster_id, selected_markers)
-        if len(cluster_markers) < 10:
+        n = len(cluster_markers)
+        if n < 10:
             logger.warning("Cluster %d has fewer than 10 markers, skipping.", cluster_id)
             continue
 
         sub_lift_matrix, sub_conv = compute_sub_lift_matrix(cluster_markers, filtered_marker_df)
-        sub_complexities = {marker: get_complexity_fast(sub_lift_matrix, sub_conv, marker) for marker in cluster_markers}
-        complexities_values = np.array(list(sub_complexities.values()))
-        velocities = np.array([sub_lift_matrix[i, i] ** (-1) if sub_lift_matrix[i, i] > 0 else np.nan for i in range(len(sub_lift_matrix))])
+        c_vals = np.array([get_complexity_fast(sub_lift_matrix, sub_conv, m) for m in cluster_markers])
+        v_vals = np.array([
+            sub_lift_matrix[i, i] ** (-1) if sub_lift_matrix[i, i] > 0 else np.nan
+            for i in range(len(sub_lift_matrix))
+        ])
 
-        cluster_reg = fit_loglog_regression(complexities_values, velocities)
-        stats['cluster_id'].append(cluster_id)
-        stats['beta1'].append(cluster_reg['beta1'])
-        stats['kendall_tau'].append(cluster_reg['kendall_tau'])
-        stats['pearson_r'].append(cluster_reg['pearson_r'])
+        reg = fit_loglog_regression(c_vals, v_vals)
+        valid = np.isfinite(c_vals) & (c_vals > 0)
+        rows.append({
+            "cluster_id": cluster_id,
+            "n_elements": n,
+            "n_valid": reg["n"],
+            "beta0": reg["beta0"],
+            "beta1": reg["beta1"],
+            "beta1_ci_low": reg["beta1_ci"][0],
+            "beta1_ci_high": reg["beta1_ci"][1],
+            "r2": reg["r2"],
+            "kendall_tau": reg["kendall_tau"],
+            "kendall_p": reg["kendall_p"],
+            "pearson_r": reg["pearson_r"],
+            "pearson_p": reg["pearson_p"],
+            "complexity_min": float(c_vals[valid].min()) if valid.sum() > 0 else np.nan,
+            "complexity_max": float(c_vals[valid].max()) if valid.sum() > 0 else np.nan,
+            "complexity_span": float(c_vals[valid].max() - c_vals[valid].min()) if valid.sum() > 0 else np.nan,
+            "complexity_mean": float(c_vals[valid].mean()) if valid.sum() > 0 else np.nan,
+        })
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    # save CSV
+    csv_path = "plots/all_clusters_stats.csv"
+    df_stats = pd.DataFrame(rows).set_index("cluster_id")
+    df_stats.to_csv(csv_path)
+    logger.info("Saved cluster stats CSV to %s (%d clusters)", csv_path, len(df_stats))
 
-    axes[0].hist(stats['beta1'], bins=10, edgecolor='black', alpha=0.7, color='steelblue')
-    axes[0].set_xlabel('β₁', fontsize=12)
-    axes[0].set_ylabel('Frequency', fontsize=12)
-    axes[0].set_title('Distribution of β₁ across Clusters', fontsize=12)
-    axes[0].grid(alpha=0.3)
-    axes[0].axvline(np.mean(stats['beta1']), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(stats["beta1"]):.3f}')
-    axes[0].legend()
+    # dot plots — 3 rows × 1 col
+    metrics = [
+        ("beta1",       "β₁",           "steelblue"),
+        ("kendall_tau", "Kendall's τ",   "darkorange"),
+        ("pearson_r",   "Pearson r",     "green"),
+    ]
 
-    axes[1].hist(stats['kendall_tau'], bins=10, edgecolor='black', alpha=0.7, color='darkorange')
-    axes[1].set_xlabel("Kendall's τ", fontsize=12)
-    axes[1].set_ylabel('Frequency', fontsize=12)
-    axes[1].set_title("Distribution of Kendall's τ across Clusters", fontsize=12)
-    axes[1].grid(alpha=0.3)
-    axes[1].axvline(np.mean(stats['kendall_tau']), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(stats["kendall_tau"]):.3f}')
-    axes[1].legend()
+    cluster_ids = [r["cluster_id"] for r in rows]
+    y_pos = np.arange(len(cluster_ids))
+    y_labels = [str(c) for c in cluster_ids]
 
-    axes[2].hist(stats['pearson_r'], bins=10, edgecolor='black', alpha=0.7, color='green')
-    axes[2].set_xlabel('Pearson r', fontsize=12)
-    axes[2].set_ylabel('Frequency', fontsize=12)
-    axes[2].set_title('Distribution of Pearson r across Clusters', fontsize=12)
-    axes[2].grid(alpha=0.3)
-    axes[2].axvline(np.mean(stats['pearson_r']), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(stats["pearson_r"]):.3f}')
-    axes[2].legend()
+    fig, axes = plt.subplots(3, 1, figsize=(5, 8), sharex=False)
 
-    plt.tight_layout()
-    plt.savefig('plots/distributions_beta1_kendall_pearson.png', dpi=150)
-    logger.info("Saved distribution plot to plots/distributions_beta1_kendall_pearson.png")
-    plt.close()
+    for ax, (col, xlabel, color) in zip(axes, metrics):
+        values = np.array([r[col] for r in rows])
+        ax.scatter(values, y_pos, color=color, s=30, zorder=3)
+        ax.axvline(0, color="red", linestyle="--", linewidth=1.2)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(y_labels, fontsize=8)
+        ax.set_ylabel("Cluster ID", fontsize=9)
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_title(f"{xlabel} per cluster", fontsize=10)
+        ax.grid(axis="x", alpha=0.3)
+
+    fig.tight_layout(pad=2.0)
+    fig.savefig("plots/distributions_beta1_kendall_pearson.png", dpi=150)
+    logger.info("Saved dot plot to plots/distributions_beta1_kendall_pearson.png")
+    plt.close(fig)
 
 
 def run_all(
