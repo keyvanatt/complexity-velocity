@@ -107,8 +107,8 @@ def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] =
     logger.info("Tree loaded: %d rows", len(treeTable.df))
 
     logger.info("Loading publishers and journal themes CSV...")
-    publishers = pl.read_csv("data/CausalityLinkPublishers.csv")
-    journaux_themes = pd.read_csv("data/journaux_themes.csv", index_col=0).to_dict()["theme"]
+    publishers = pl.read_csv("/users/eleves-b/2023/keyvan.attarian/complexity-velocity/data/CausalityLinkPublishers.csv")
+    journaux_themes = pd.read_csv("/users/eleves-b/2023/keyvan.attarian/complexity-velocity/data/journaux_themes.csv", index_col=0).to_dict()["theme"]
     logger.info("Publishers: %d entries, journal themes: %d entries", len(publishers), len(journaux_themes))
 
     logger.info("Initial marker table: %d entries, %d markers, %d articles", 
@@ -507,6 +507,73 @@ def plot_cluster_distributions(
     plt.close(fig)
 
 
+def plot_all_clusters_grid(
+    filtered_marker_df: pl.DataFrame,
+    selected_markers: np.ndarray,
+    labels: np.ndarray,
+    n_cols: int = 4,
+    out_path: str = "plots/all_clusters_complexity_velocity.png",
+) -> None:
+    """Grid of complexity vs velocity scatter + fit line for every cluster.
+
+    Layout: n_cols columns, ceil(n_clusters / n_cols) rows.
+    No stats annotations — scatter and fit only.
+    """
+    cluster_ids = sorted(int(l) for l in np.unique(labels) if l != -1)
+    n_clusters = len(cluster_ids)
+    n_rows = (n_clusters + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 3.5, n_rows * 3.0))
+    axes_flat = np.array(axes).flatten()
+
+    for ax_idx, cluster_id in enumerate(cluster_ids):
+        ax = axes_flat[ax_idx]
+        cluster_markers = markers_from_cluster(labels, cluster_id, selected_markers)
+
+        if len(cluster_markers) < 5:
+            ax.set_visible(False)
+            continue
+
+        sub_lift_matrix, sub_conv = compute_sub_lift_matrix(cluster_markers, filtered_marker_df)
+        c_vals = np.array([get_complexity_fast(sub_lift_matrix, sub_conv, m) for m in cluster_markers])
+        v_vals = np.array([
+            sub_lift_matrix[i, i] ** (-1) if sub_lift_matrix[i, i] > 0 else np.nan
+            for i in range(len(sub_lift_matrix))
+        ])
+
+        valid = np.isfinite(c_vals) & np.isfinite(v_vals) & (c_vals > 0) & (v_vals > 0)
+        ax.scatter(c_vals[valid], v_vals[valid], s=3, alpha=0.4)
+
+        if valid.sum() >= 3:
+            reg = fit_loglog_regression(c_vals, v_vals)
+            c_fit = np.array([c_vals[valid].min(), c_vals[valid].max()])
+            v_fit = np.exp(reg["beta0"]) * c_fit ** reg["beta1"]
+            ax.plot(c_fit, v_fit, color="red", linewidth=1.2)
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title(f"Cluster {cluster_id}", fontsize=8)
+        ax.tick_params(labelsize=6)
+        ax.set_xlabel("Complexity", fontsize=7)
+        ax.set_ylabel("Velocity", fontsize=7)
+
+    for ax_idx in range(len(cluster_ids), len(axes_flat)):
+        axes_flat[ax_idx].set_visible(False)
+
+    # single shared legend via proxy artists
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="steelblue", markersize=5, alpha=0.6, label="markers"),
+        Line2D([0], [0], color="red", linewidth=1.5, label="log-log fit"),
+    ]
+    fig.legend(handles=legend_handles, loc="lower right", fontsize=8, framealpha=0.8)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    logger.info("Saved all-clusters grid to %s", out_path)
+    plt.close(fig)
+
+
 def run_all(
     root: Path = Path("data/causalitylink_sample"),
     cluster_ids: Optional[List[int]] = None,
@@ -570,13 +637,15 @@ def run_all(
     if all_clusters or ids_to_run:
         logger.info("=== Plotting cluster distributions ===")
         plot_cluster_distributions(filtered_marker_df, selected_markers, lift_matrix, conv, labels, reg)
+        logger.info("=== Plotting all-clusters grid ===")
+        plot_all_clusters_grid(filtered_marker_df, selected_markers, labels)
 
     return filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels
 
 
 if __name__ == "__main__":
 
-    root = Path("data/causalitylink_sample")
+    root = Path("/Data/KAT/causalitylink")
     np.random.seed(42)
     filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels = run_all(
         root=root,
