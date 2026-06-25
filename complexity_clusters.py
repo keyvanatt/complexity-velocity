@@ -452,10 +452,47 @@ def plot_cluster_distributions(
 
         reg = fit_loglog_regression(c_vals, v_vals)
         valid = np.isfinite(c_vals) & (c_vals > 0)
+
+        # n_articles: unique articles mentioning at least one cluster marker
+        n_articles = int(
+            filtered_marker_df.filter(pl.col("marker").is_in(cluster_markers.tolist()))["id"].n_unique()
+        )
+
+        # intra-cluster lift: mean pairwise lift (off-diagonal) from global matrix
+        cluster_idx = np.array([conv[m] for m in cluster_markers if m in conv], dtype=int)
+        sub_intra = lift_matrix[np.ix_(cluster_idx, cluster_idx)]
+        n_c = len(cluster_idx)
+        if n_c > 1:
+            mean_intra_lift = float((sub_intra.sum() - np.trace(sub_intra)) / (n_c * (n_c - 1)))
+        else:
+            mean_intra_lift = np.nan
+
+        # external lift: mean lift from markers outside the cluster onto cluster members
+        all_idx = np.arange(lift_matrix.shape[0])
+        external_mask = np.ones(lift_matrix.shape[0], dtype=bool)
+        external_mask[cluster_idx] = False
+        external_idx = all_idx[external_mask]
+        if len(external_idx) > 0 and len(cluster_idx) > 0:
+            mean_external_lift = float(lift_matrix[np.ix_(cluster_idx, external_idx)].mean())
+        else:
+            mean_external_lift = np.nan
+
+        # Save full per-cluster marker data for LLM judge
+        pd.DataFrame({
+            "marker": cluster_markers,
+            "complexity": c_vals,
+            "velocity": v_vals,
+        }).to_csv(f"clusters/cluster_{cluster_id}_all_markers.csv", index=False)
+
         rows.append({
             "cluster_id": cluster_id,
-            "n_elements": n,
+            "n_kpi": n,
+            "n_articles": n_articles,
             "n_valid": reg["n"],
+            "mean_intra_lift": mean_intra_lift,
+            "mean_external_lift": mean_external_lift,
+            "complexity_mean": float(c_vals[valid].mean()) if valid.sum() > 0 else np.nan,
+            "complexity_median": float(np.median(c_vals[valid])) if valid.sum() > 0 else np.nan,
             "beta0": reg["beta0"],
             "beta1": reg["beta1"],
             "beta1_ci_low": reg["beta1_ci"][0],
@@ -468,11 +505,10 @@ def plot_cluster_distributions(
             "complexity_min": float(c_vals[valid].min()) if valid.sum() > 0 else np.nan,
             "complexity_max": float(c_vals[valid].max()) if valid.sum() > 0 else np.nan,
             "complexity_span": float(c_vals[valid].max() - c_vals[valid].min()) if valid.sum() > 0 else np.nan,
-            "complexity_mean": float(c_vals[valid].mean()) if valid.sum() > 0 else np.nan,
         })
 
     # save CSV
-    csv_path = "plots/all_clusters_stats.csv"
+    csv_path = "clusters/all_clusters_stats.csv"
     df_stats = pd.DataFrame(rows).set_index("cluster_id")
     df_stats.to_csv(csv_path)
     logger.info("Saved cluster stats CSV to %s (%d clusters)", csv_path, len(df_stats))
