@@ -1,3 +1,10 @@
-data/causalitylink_sample/
+# Données (jamais versionnées)
+data/
+
+# Python
 __pycache__/
+*.pyc
 .venv/
+
+# Jupyter
+.ipynb_checkpoints/
