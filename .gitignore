@@ -8,3 +8,6 @@ __pycache__/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Archived (unfair, C-reading) experiment runs — kept on disk, not versioned
+archive/
