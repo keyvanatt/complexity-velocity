@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def generate_cluster_markers(n_clusters, n_markers, p_intra, w_min, w_max, p_inter):
+def generate_cluster_markers(n_clusters, n_markers, p_intra, w_min, w_max, p_inter, rng=None):
     """
     Generate an upper-triangular dependency matrix C with cluster structure.
 
@@ -26,6 +26,8 @@ def generate_cluster_markers(n_clusters, n_markers, p_intra, w_min, w_max, p_int
     w_min      : float  minimum edge weight
     w_max      : float  maximum edge weight
     p_inter    : float  probability of an edge between different clusters
+    rng        : np.random.Generator or None — pass a seeded generator for
+                 reproducibility; defaults to a fresh unseeded one.
 
     Returns
     -------
@@ -39,7 +41,7 @@ def generate_cluster_markers(n_clusters, n_markers, p_intra, w_min, w_max, p_int
     sizes[:n_markers % n_clusters] += 1
     labels = np.repeat(np.arange(n_clusters), sizes)
 
-    rng = np.random.default_rng()
+    rng = rng if rng is not None else np.random.default_rng()
     for i in range(n_markers):
         for j in range(i + 1, n_markers):
             p = p_intra if labels[i] == labels[j] else p_inter
@@ -49,12 +51,15 @@ def generate_cluster_markers(n_clusters, n_markers, p_intra, w_min, w_max, p_int
     return C, labels
 
 
-def simulate_markers(C, u, n_docs=1):
+def simulate_markers(C, u, n_docs=1, rng=None):
     """
     C: (N, N) dependency matrix, C[i,j] = probability M_i given M_j
     u: (N,) unary probabilities for markers
     n_docs: number of documents to generate
+    rng: np.random.Generator or None — pass a seeded generator for
+         reproducibility; defaults to a fresh unseeded one.
     """
+    rng = rng if rng is not None else np.random.default_rng()
     N = len(u)
     # Compute rank from C: count non-zero dependencies per row
     ranks = np.sum(C != 0, axis=1)
@@ -70,7 +75,7 @@ def simulate_markers(C, u, n_docs=1):
                     p = u[i]
                 else:
                     p = u[i] + np.sum(C[i, present])
-                if np.random.rand() < np.clip(p, 0, 1):
+                if rng.random() < np.clip(p, 0, 1):
                     present[i] = 1
         markers[doc] = present.astype(int)
     return markers
@@ -103,9 +108,9 @@ def plot_dependency_matrix(C, title="Dependency Matrix C", save_path=None):
     plt.show()
 
 
-def assess_kmeans(C, true_labels, k_max=None, n_repeats=20, save_path=None):
+def run_kmeans(C, true_labels, k_max=None, n_repeats=20):
     """
-    Assess k-means clustering on StandardScaler([C, C^T]).
+    Compute-only k-means clustering on StandardScaler([C, C^T]) (no plotting).
 
     The optimal k is inferred by maximising  μ − σ  where μ and σ are the
     mean and standard deviation of pairwise ARI across n_repeats independent
@@ -120,9 +125,10 @@ def assess_kmeans(C, true_labels, k_max=None, n_repeats=20, save_path=None):
 
     Returns
     -------
-    best_k  : int
-    pred    : (n,) predicted labels from the final k-means run
-    ari     : float — ARI of pred vs. true_labels
+    best_k    : int
+    pred      : (n,) predicted labels from the final k-means run
+    ari       : float — ARI of pred vs. true_labels
+    stability : dict — k -> (μ − σ) stability score (for plotting)
     """
     n = C.shape[0]
     X = StandardScaler().fit_transform(np.hstack([C, C.T]))
@@ -143,6 +149,23 @@ def assess_kmeans(C, true_labels, k_max=None, n_repeats=20, save_path=None):
     best_k = max(stability, key=stability.get)
     pred = KMeans(n_clusters=best_k, n_init=20, random_state=0).fit_predict(X)
     ari = adjusted_rand_score(true_labels, pred)
+    return best_k, pred, ari, stability
+
+
+def assess_kmeans(C, true_labels, k_max=None, n_repeats=20, save_path=None):
+    """
+    Assess k-means clustering on StandardScaler([C, C^T]) and plot the
+    stability curve. Thin plotting wrapper around ``run_kmeans``.
+
+    Returns
+    -------
+    best_k  : int
+    pred    : (n,) predicted labels from the final k-means run
+    ari     : float — ARI of pred vs. true_labels
+    """
+    best_k, pred, ari, stability = run_kmeans(
+        C, true_labels, k_max=k_max, n_repeats=n_repeats
+    )
 
     # stability curve
     ks = list(stability.keys())
@@ -162,14 +185,14 @@ def assess_kmeans(C, true_labels, k_max=None, n_repeats=20, save_path=None):
     return best_k, pred, ari
 
 
-def assess_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=None, save_path=None):
+def run_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=None, rng=None):
     """
-    Assess two UMAP + HDBSCAN pipelines on the same dependency matrix C.
+    Compute-only version of the two UMAP + HDBSCAN pipelines (no plotting).
 
     Approach A — euclidean
         UMAP(metric='euclidean') on StandardScaler([C, C^T]) → HDBSCAN
 
-    Approach B — lift dissimilarity
+    Approach B — lift dissimilarity (the "complexity" metric)
         Simulate n_sim marker vectors from C, compute empirical pairwise lifts,
         build a precomputed dissimilarity matrix
             D[i,j] = log(1 + 1 / lift[i,j]),  lift[i,j] = P(i,j) / (P(i)·P(j))
@@ -182,10 +205,12 @@ def assess_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=Non
     n_sim            : int — documents simulated for lift estimation (approach B)
     min_cluster_size : int or None — HDBSCAN parameter (default: n // (n_true_clusters * 3))
     u                : (n,) unary probabilities; defaults to 0.1 for all markers
+    rng              : np.random.Generator or None — passed to simulate_markers
+                       for reproducible lift estimation.
 
     Returns
     -------
-    (pred_A, ari_A), (pred_B, ari_B), D
+    (pred_A, ari_A), (pred_B, ari_B), D, (emb_A, emb_B)
     """
     n = C.shape[0]
     n_true = len(np.unique(true_labels))
@@ -201,7 +226,7 @@ def assess_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=Non
     if u is None:
         u = np.full(n, 0.1)
 
-    sim = simulate_markers(C, u, n_docs=n_sim).astype(float)  # (n_sim, n)
+    sim = simulate_markers(C, u, n_docs=n_sim, rng=rng).astype(float)  # (n_sim, n)
 
     p_i  = sim.mean(axis=0)               # marginal probabilities, shape (n,)
     p_ij = (sim.T @ sim) / n_sim          # joint probabilities,    shape (n, n)
@@ -217,6 +242,22 @@ def assess_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=Non
     emb_B  = umap.UMAP(n_components=2, metric="precomputed", random_state=42).fit_transform(D)
     pred_B = hdbscan.HDBSCAN(min_cluster_size=min_cs).fit_predict(emb_B)
     ari_B  = adjusted_rand_score(true_labels, pred_B)
+
+    return (pred_A, ari_A), (pred_B, ari_B), D, (emb_A, emb_B)
+
+
+def assess_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=None, save_path=None):
+    """
+    Assess two UMAP + HDBSCAN pipelines on the same dependency matrix C and
+    plot the 2D embeddings. Thin plotting wrapper around ``run_umap_hdbscan``.
+
+    Returns
+    -------
+    (pred_A, ari_A), (pred_B, ari_B), D
+    """
+    (pred_A, ari_A), (pred_B, ari_B), D, (emb_A, emb_B) = run_umap_hdbscan(
+        C, true_labels, n_sim=n_sim, min_cluster_size=min_cluster_size, u=u
+    )
 
     # ── Plot ──────────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
