@@ -5,14 +5,13 @@ For each of nine DAG topologies, generates a graph, simulates binary documents
 from the generative model of the paper, runs the PC algorithm and scores the
 recovered *undirected skeleton* against the truth with the F1 measure.
 
-Defaults reproduce the exploratory run: random graph size p in [12, 20],
-N_obs = 9000, 15 repetitions, unlimited conditioning-set size.
+Defaults reproduce the paper's table "95% confidence intervals for the F1 score
+of the PC algorithm": p = 12 nodes, N_obs = 30 000 observations, 20 replications
+per configuration, alpha in {0.01, 0.1, 0.3}, unlimited conditioning-set size.
 
-To reproduce Table "95% confidence intervals for the F1 score of the PC
-algorithm" of the paper (p = 12, N_obs = 30 000, 20 replications):
+    python empirical_pc_tests.py
 
-    python empirical_pc_tests.py --p-min 12 --p-max 12 --n-obs 30000 --reps 20
-
+Graph size can also be randomised over a range, e.g. --p-min 12 --p-max 20.
 Outputs a CSV under results/ (see --out).
 """
 
@@ -29,17 +28,17 @@ warnings.filterwarnings('ignore')
 
 from causallearn.search.ConstraintBased.PC import pc
 
-# ---------- Defaults ----------
-N_REPETITIONS = 15
-P_MIN, P_MAX = 12, 20            # random graph size
-N_OBS = 9000
+# ---------- Defaults (the paper's configuration) ----------
+N_REPETITIONS = 20
+P_MIN, P_MAX = 12, 12            # graph size; set p_max > p_min to randomise it
+N_OBS = 30_000
 ALPHA_VALUES = [0.01, 0.1, 0.3]
 U_RANGE = (0.05, 0.15)
 MAX_PROB = 0.9
 RANDOM_SEED = 42
 INDEP_TEST = 'chisq'
 RESULTS_DIR = Path("results")
-DEFAULT_OUT = RESULTS_DIR / "pc_validation_default_cond_random_p.csv"
+DEFAULT_OUT = RESULTS_DIR / "pc_validation_f1.csv"
 
 # ---------- DAG generators (unchanged) ----------
 def gen_C_chain(p, strength=0.2):

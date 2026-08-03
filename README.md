@@ -78,6 +78,7 @@ complexity-velocity/
 ├── kb_visualisation.py              # interactive knowledge-base tree explorer
 │
 ├── basevcx.py                       # synthetic SCM: C generators, document simulation, lifts
+│                                    #   (`gen_C_dense_progressive` backs the illustrative run)
 ├── marker_clustering.py             # clustering benchmark helpers (k-means / UMAP+HDBSCAN)
 ├── cluster_recovery_fair.py         # C-blind cluster-recovery benchmark  ← the one in the paper
 ├── cluster_recovery_experiment.py   # earlier single-regime variant (also holds the stat helpers)
@@ -96,7 +97,7 @@ complexity-velocity/
 | Paper element | Script | Command |
 |---|---|---|
 | Cluster-recovery table & figure (`ARI` vs `p_inter`) | `cluster_recovery_fair.py` | `python cluster_recovery_fair.py` |
-| PC skeleton `F1` confidence intervals | `empirical_pc_tests.py` | `python empirical_pc_tests.py --p-min 12 --p-max 12 --n-obs 30000 --reps 20` |
+| PC skeleton `F1` confidence intervals | `empirical_pc_tests.py` | `python empirical_pc_tests.py` |
 | 2D projection, per-cluster stats, complexity–velocity grid | `complexity_clusters.py` | `python complexity_clusters.py --root <data> --all-clusters` |
 | Four-cluster complexity–velocity figure | `analyze_selected_clusters.py` | `python analyze_selected_clusters.py --root <data>` |
 | Per-publisher complexity–velocity figure | `complexity_clusters_publisher.py` | `python complexity_clusters_publisher.py --root <data> --cluster-id 12` |
@@ -179,10 +180,10 @@ is documented in the function's docstring.
 
 - Every script takes `--seed` (default 42) and passes it to UMAP, DBSCAN
   sampling and the synthetic generators.
-- `empirical_pc_tests.py` defaults to the exploratory configuration
-  (`p ∈ [12, 20]`, `N_obs = 9000`, 15 repetitions). The paper's table uses
-  `p = 12`, `N_obs = 30000`, 20 replications — pass the flags shown in the
-  table above.
+- `empirical_pc_tests.py` defaults to the paper's configuration (`p = 12`,
+  `N_obs = 30000`, 20 replications, `α ∈ {0.01, 0.1, 0.3}`), so a bare
+  `python empirical_pc_tests.py` reproduces the F1 table. Pass
+  `--p-min 12 --p-max 20` to randomise the graph size instead.
 - `cluster_recovery_fair.py` is the benchmark reported in the paper: no method
   is allowed to read the generating matrix `C`, all three see only the lift
   estimated from simulated documents. `cluster_recovery_sweep.py` and

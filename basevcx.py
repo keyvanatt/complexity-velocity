@@ -1,13 +1,15 @@
 """Synthetic playground for the structural causal model of the paper.
 
 Provides dependency-matrix generators (chain, tree, cliques, hierarchical,
-random DAG, fractal, funnel, skip-hierarchical, dense progressive, mostly-full,
+random DAG, fractal, funnel, skip-hierarchical, dense progressive,
 increasing-rank), the document generator ``simulate_markers``, DAG depth
 computation, and lift/complexity visualisations.
 
 Importable as a module; ``python basevcx.py`` runs an illustrative end-to-end
 simulation with interactive matplotlib windows.
 """
+
+import argparse
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -155,16 +157,6 @@ def gen_C_dense_progressive(N, max_lookback=5, base_strength=0.05):
     return C.T
 
 
-def gen_C_mostly_full(N, density=0.8, strength_range=(0.02, 0.08)):
-    C = np.zeros((N, N))
-    strengths = np.linspace(strength_range[0], strength_range[1], N)
-    for i in range(1, N):
-        for j in range(i):
-            if np.random.rand() < density:
-                C[i, j] = 1 / strengths[i] * np.random.uniform(0.9, 1.1)
-    return C.T
-
-
 def gen_C_croissante_rang(N, max_strength, proba_app=0.2):
     """Generate a dependency matrix where ranks increase with marker index"""
     C = np.zeros((N, N))
@@ -255,9 +247,8 @@ def max_strength(rang):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    # Sanity-check all generators
-    N = 8
+def sanity_check_generators(N=8):
+    """Print each generator's ranks and check 0 < u_i + sum_j C[i,j] <= 1."""
     for name, C_gen in [
         ("Chain",        lambda: gen_C_chain(N)),
         ("Tree",         lambda: gen_C_tree(N, branching=2)),
@@ -273,9 +264,15 @@ if __name__ == "__main__":
         sums = u + np.sum(C, axis=1)
         print(f"  Property holds: {(sums > 0).all()} and {(sums <= 1).all()}\n")
 
+
+def main(n_markers=150, n_sims=20_000, seed=42):
+    """Illustrative end-to-end simulation: build C, simulate documents, plot lifts."""
+    np.random.seed(seed)
+    sanity_check_generators()
+
     # ── Build matrix and unary probs ──────────────────────────────────────────
-    N = 150
-    C = gen_C_mostly_full(N, density=0.8, strength_range=(0.02, 0.08))
+    N = n_markers
+    C = gen_C_dense_progressive(N, max_lookback=5, base_strength=0.05)
     min_c = np.min(C[C > 0])
     c_rank = np.sum(C > min_c / 2, axis=0)
 
@@ -306,7 +303,6 @@ if __name__ == "__main__":
     plt.show()
 
     # ── Simulate and compute lifts ────────────────────────────────────────────
-    n_sims = 20_000
     markers = simulate_markers(C, u, n_docs=n_sims)
     p_marge = np.mean(markers, axis=0)
     if p_marge.min() == 0:
@@ -386,3 +382,15 @@ if __name__ == "__main__":
     ax3.grid(True)
     ax3.set_xlabel('Depth in DAG')
     plt.show()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--n-markers", type=int, default=150,
+                        help="Number of markers in the simulated corpus (default: %(default)s)")
+    parser.add_argument("--n-sims", type=int, default=20_000,
+                        help="Number of documents to simulate (default: %(default)s)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: %(default)s)")
+    args = parser.parse_args()
+    main(n_markers=args.n_markers, n_sims=args.n_sims, seed=args.seed)
