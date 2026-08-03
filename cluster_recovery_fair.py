@@ -17,7 +17,11 @@ used:
 
     - kmeans           : k-means on StandardScaler([L, L^T])          (L = est. lift)
     - umap_euclidean   : UMAP(euclidean) on StandardScaler([L, L^T]) + HDBSCAN
-    - umap_complexity  : UMAP(precomputed D=log(1+1/L)) + HDBSCAN     (complexity metric)
+    - umap_complexity  : UMAP(precomputed D) + HDBSCAN                (complexity metric)
+
+where D is the shared transform of lift_dissimilarity.py,
+D[i,j] = log(1 + 1/(L[i,j] + eps) - p_i) - the same one complexity_clusters.py
+applies to the corpus.
 
 Run:  python cluster_recovery_fair.py
 Outputs: results/cluster_recovery_fair.csv,
@@ -38,6 +42,7 @@ from sklearn.metrics import adjusted_rand_score
 import umap
 import hdbscan
 
+from lift_dissimilarity import lift_dissimilarity
 from marker_clustering import generate_cluster_markers, simulate_markers, run_kmeans
 from cluster_recovery_experiment import bootstrap_ci, t_ci
 
@@ -68,8 +73,9 @@ METHOD_COLORS = {
 def estimate_lift_and_dissimilarity(sim, n_sim):
     """Empirical pairwise lift + complexity dissimilarity from documents.
 
-    Identical construction to marker_clustering.run_umap_hdbscan (approach B):
-        lift[i,j] = P(i,j) / (P(i)*P(j)),   D = log(1 + 1/lift)
+    Identical construction to marker_clustering.run_umap_hdbscan (approach B)
+    and to the corpus pipeline: lift[i,j] = P(i,j) / (P(i)*P(j)), then the
+    shared ``lift_dissimilarity`` transform.
     """
     p_i  = sim.mean(axis=0)
     p_ij = (sim.T @ sim) / n_sim
@@ -78,10 +84,7 @@ def estimate_lift_and_dissimilarity(sim, n_sim):
     lift  = p_ij / denom
     lift  = np.where(lift > 0, lift, 1e-10)
 
-    D = np.log1p(1.0 / lift)
-    np.fill_diagonal(D, 0.0)
-    D = (D + D.T) / 2
-    return lift, D
+    return lift, lift_dissimilarity(lift)
 
 
 def run_fair(C, true_labels, n_sim=N_SIM, min_cluster_size=None, u=None, rng=None):

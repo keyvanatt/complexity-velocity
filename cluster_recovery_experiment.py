@@ -10,7 +10,8 @@ true clusters via the Adjusted Rand Index (ARI):
     - umap_euclidean    : UMAP(euclidean) + HDBSCAN            (approach A, no complexity metric)
     - umap_complexity   : UMAP(precomputed lift dissimilarity) + HDBSCAN  (approach B)
 
-The lift dissimilarity D = log(1 + 1/lift) is the "complexity" metric: it is
+The lift dissimilarity of lift_dissimilarity.py,
+D[i,j] = log(1 + 1/(lift[i,j] + eps) - p_i), is the "complexity" metric: it is
 derived from empirical pairwise lifts, lift[i,j] = P(i,j) / (P(i)*P(j)).
 
 Reports, per method, mean ARI with 95% confidence intervals (bootstrap +

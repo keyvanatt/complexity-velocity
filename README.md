@@ -42,8 +42,13 @@ In code this is read off the diagonal of the lift matrix, since
 **Dissimilarity** used for clustering, derived from the lift:
 
 ```
-D(i, j) = log(1 + 1 / lift(i, j))
+D(i, j) = log(1 + 1 / (lift(i, j) + eps) - P(i))
 ```
+
+symmetrised and shifted to be non-negative. The `- P(i)` term is a row-wise
+offset that damps very frequent markers, and puts the diagonal at zero. There
+is exactly one implementation, in [`lift_dissimilarity.py`](lift_dissimilarity.py),
+shared by the corpus pipeline and every synthetic benchmark.
 
 ---
 
@@ -69,6 +74,7 @@ is committed with its outputs so it can also just be read on GitHub.
 complexity-velocity/
 ├── demo.ipynb                       # ← start here: runnable walkthrough, no proprietary data needed
 │
+├── lift_dissimilarity.py            # the clustering dissimilarity — one implementation, shared
 ├── causalityTable.py                # AVRO loading utility for the CausalityLink dump
 ├── complexity_clusters.py           # main pipeline: lift → complexity/velocity → UMAP + DBSCAN
 ├── complexity_clusters_publisher.py # same, broken down per publisher
@@ -164,15 +170,6 @@ can be checked without access to the corpus.
 Downstream, `peter_clark_scm.py` recovers the causal skeleton inside a cluster
 with the PC algorithm, and `llm_judge.py` cross-checks the resulting complexity
 ordering against an independent LLM rater.
-
-### Note on the clustering dissimilarity
-
-The synthetic benchmarks (`marker_clustering.py`, `cluster_recovery_fair.py`)
-use the dissimilarity exactly as defined in the paper, `D = log(1 + 1/lift)`.
-The corpus clustering in `compute_latent_and_cluster` uses a variant with a
-row-wise offset, `D = log(1 + 1/(lift + ε) − P(i))`, which damps very frequent
-markers; this is the form that produced the published 21-cluster partition and
-is documented in the function's docstring.
 
 ---
 

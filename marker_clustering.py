@@ -5,7 +5,8 @@ and compares three ways of recovering the latent partition:
 
     - k-means on the standardised [C, C^T] features,
     - UMAP (euclidean) + HDBSCAN on the same features,
-    - UMAP on the precomputed lift dissimilarity D = log(1 + 1/lift) + HDBSCAN.
+    - UMAP on the precomputed lift dissimilarity of ``lift_dissimilarity`` +
+      HDBSCAN.
 
 Run ``python marker_clustering.py`` for a single illustrative comparison; see
 ``cluster_recovery_fair.py`` for the C-blind benchmark reported in the paper.
@@ -17,6 +18,7 @@ import hdbscan
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
+from lift_dissimilarity import lift_dissimilarity
 from matplotlib.colors import LogNorm
 from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score
@@ -208,8 +210,8 @@ def run_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=None, 
 
     Approach B — lift dissimilarity (the "complexity" metric)
         Simulate n_sim marker vectors from C, compute empirical pairwise lifts,
-        build a precomputed dissimilarity matrix
-            D[i,j] = log(1 + 1 / lift[i,j]),  lift[i,j] = P(i,j) / (P(i)·P(j))
+        lift[i,j] = P(i,j) / (P(i)·P(j)), build the precomputed dissimilarity
+        of ``lift_dissimilarity`` — the same one the corpus pipeline uses —
         then UMAP(metric='precomputed') on D → HDBSCAN.
 
     Parameters
@@ -249,9 +251,7 @@ def run_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=None, 
     lift  = p_ij / denom
     lift  = np.where(lift > 0, lift, 1e-10)     # guard against zero joint probs
 
-    D = np.log1p(1.0 / lift)              # dissimilarity matrix
-    np.fill_diagonal(D, 0.0)              # zero self-distance
-    D = (D + D.T) / 2                    # symmetrise finite-sample estimates
+    D = lift_dissimilarity(lift)
 
     emb_B  = umap.UMAP(n_components=2, metric="precomputed", random_state=42).fit_transform(D)
     pred_B = hdbscan.HDBSCAN(min_cluster_size=min_cs).fit_predict(emb_B)
@@ -341,7 +341,7 @@ def plot_dissimilarity_matrix(D, pred_labels, title="Dissimilarity matrix", save
     im = ax_main.imshow(
         D_ord, cmap="magma_r", aspect="auto", interpolation="nearest"
     )
-    plt.colorbar(im, ax=ax_main, label="Dissimilarity  log(1 + 1/lift)")
+    plt.colorbar(im, ax=ax_main, label="Dissimilarity  log(1 + 1/(lift+eps) - p_i)")
     ax_main.set_xlabel("Marker j  (sorted by cluster)")
     ax_main.set_ylabel("Marker i  (sorted by cluster)")
     ax_main.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)

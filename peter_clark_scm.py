@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - dependency guard
     sys.exit(1)
 
 from causalityTable import CausalityTable
+from lift_dissimilarity import lift_dissimilarity
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ def get_clusters(root_path: Path):
     lift = np.divide(cm_prob, denom, out=np.zeros_like(cm_prob), where=denom != 0)
     lift = 0.5 * (lift + lift.T)
 
-    dist = np.log1p((lift + 1e-4) ** -1)
+    dist = lift_dissimilarity(lift)
     X_latent = UMAP(metric="precomputed", n_neighbors=15, random_state=42).fit_transform(dist)
     labels = DBSCAN(eps=0.2, min_samples=10).fit(X_latent).labels_
 

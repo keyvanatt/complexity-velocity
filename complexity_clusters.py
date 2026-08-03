@@ -14,6 +14,7 @@ import pandas as pd
 import polars as pl
 import seaborn as sns
 from causalityTable import CausalityTable
+from lift_dissimilarity import lift_dissimilarity
 from scipy import stats
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
@@ -338,27 +339,14 @@ def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.nda
                                eps_dbscan: float = 0.10, min_samples_dbscan: int = 20, seed: int = 42) -> Tuple[np.ndarray, np.ndarray]:
     """Compute latent 2D embedding (UMAP) from lift matrix-derived distances and run DBSCAN clustering.
 
-    The dissimilarity fed to UMAP is
-
-        D[i,j] = log(1 + 1/(lift[i,j] + eps) - p_i)
-
-    symmetrised and shifted to be non-negative, where ``p_i = 1 / lift[i,i]``
-    is the marginal probability of marker ``i``. The ``- p_i`` term is a
-    row-wise offset that damps the contribution of very frequent markers; it is
-    the variant used to produce the published clustering of the corpus. The
-    plain form ``log(1 + 1/lift)`` used in the synthetic benchmarks lives in
-    ``marker_clustering.run_umap_hdbscan`` and ``cluster_recovery_fair``.
+    The dissimilarity fed to UMAP is ``lift_dissimilarity.lift_dissimilarity``,
+    shared with the synthetic benchmarks so the two cannot drift apart.
 
     Saves projection and projection with DBSCAN into PNG files with given prefix.
     Returns embedding and cluster labels.
     """
-    epsilon = 1e-4
-    velocities = np.array([lift_matrix[i, i] ** (-1) if lift_matrix[i, i] > 0 else np.nan for i in range(len(lift_matrix))])
-    # safeguard and produce a symmetric non-negative distance matrix
     logger.info("Building distance matrix (%dx%d)...", lift_matrix.shape[0], lift_matrix.shape[1])
-    distance_matrix = np.log1p((lift_matrix + epsilon) ** (-1) - velocities[:, None])
-    distance_matrix = (distance_matrix + distance_matrix.T) / 2.0
-    distance_matrix -= distance_matrix.min()
+    distance_matrix = lift_dissimilarity(lift_matrix)
 
     logger.info("Running UMAP (precomputed, %d markers)...", len(selected_markers))
     umap = UMAP(n_components=2, metric="precomputed", min_dist=0.10, random_state=seed)
