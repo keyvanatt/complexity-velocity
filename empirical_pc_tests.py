@@ -1,29 +1,45 @@
 #!/usr/bin/env python3
-"""
-PC skeleton validation – random p ∈ [12,20], N_obs = 9000,
-default max_cond_set_size (no limit), 15 repetitions.
+"""PC skeleton-recovery validation on synthetic DAGs.
+
+For each of nine DAG topologies, generates a graph, simulates binary documents
+from the generative model of the paper, runs the PC algorithm and scores the
+recovered *undirected skeleton* against the truth with the F1 measure.
+
+Defaults reproduce the exploratory run: random graph size p in [12, 20],
+N_obs = 9000, 15 repetitions, unlimited conditioning-set size.
+
+To reproduce Table "95% confidence intervals for the F1 score of the PC
+algorithm" of the paper (p = 12, N_obs = 30 000, 20 replications):
+
+    python empirical_pc_tests.py --p-min 12 --p-max 12 --n-obs 30000 --reps 20
+
+Outputs a CSV under results/ (see --out).
 """
 
+import argparse
+import warnings
+from pathlib import Path
+
+import networkx as nx
 import numpy as np
 import pandas as pd
-import networkx as nx
-import warnings
 from joblib import Parallel, delayed
+
 warnings.filterwarnings('ignore')
 
 from causallearn.search.ConstraintBased.PC import pc
 
-# ---------- Parameters ----------
+# ---------- Defaults ----------
 N_REPETITIONS = 15
 P_MIN, P_MAX = 12, 20            # random graph size
 N_OBS = 9000
 ALPHA_VALUES = [0.01, 0.1, 0.3]
 U_RANGE = (0.05, 0.15)
-C_RANGE = (0.1, 0.4)
 MAX_PROB = 0.9
 RANDOM_SEED = 42
 INDEP_TEST = 'chisq'
-np.random.seed(RANDOM_SEED)
+RESULTS_DIR = Path("results")
+DEFAULT_OUT = RESULTS_DIR / "pc_validation_default_cond_random_p.csv"
 
 # ---------- DAG generators (unchanged) ----------
 def gen_C_chain(p, strength=0.2):
@@ -132,19 +148,33 @@ def compute_f1(true_adj, est_adj):
     rec = tp / (tp+fn) if (tp+fn)>0 else 0.0
     return 2*prec*rec/(prec+rec) if (prec+rec)>0 else 0.0
 
+TOPOLOGIES = {
+    'Chain':              gen_C_chain,
+    'Tree (b=2)':         gen_C_tree,
+    'Star':               gen_star_dag,
+    'Random (d=1)':       lambda p: random_dag(p, edge_prob=1/(p-1)),
+    'Random (d=2)':       lambda p: random_dag(p, edge_prob=2/(p-1)),
+    'Scale-free':         gen_scale_free_dag,
+    'Dense progressive':  gen_C_dense_progressive,
+    'Mostly full':        gen_C_mostly_full,
+    'Layered hierarchy':  gen_layered_dag,
+}
+
 # ---------- Worker ----------
 def process_config(args):
-    topo_name, gen_func, alpha = args
+    topo_name, gen_func, alpha, p_min, p_max, n_obs, reps, seed = args
+    # Each worker seeds its own RNG so parallel runs stay reproducible.
+    np.random.seed(seed)
     f1_vals = []
-    for _ in range(N_REPETITIONS):
-        p = np.random.randint(P_MIN, P_MAX+1)
+    for _ in range(reps):
+        p = np.random.randint(p_min, p_max+1)
         C = gen_func(p)
         u = np.random.uniform(*U_RANGE, size=p)
         for i in range(p):
             s = np.sum(C[i, :]) + u[i]
             if s > MAX_PROB:
                 C[i, :] *= MAX_PROB / s
-        X = simulate_markers(C, u, n_docs=N_OBS)
+        X = simulate_markers(C, u, n_docs=n_obs)
         skel_est = get_estimated_skeleton(X, alpha)
         if skel_est is None:
             continue
@@ -156,48 +186,63 @@ def process_config(args):
         return topo_name, alpha, np.nan, np.nan, 0
 
 # ---------- Run ----------
-topologies = {
-    'Chain':              gen_C_chain,
-    'Tree (b=2)':         gen_C_tree,
-    'Star':               gen_star_dag,
-    'Random (d=1)':       lambda p: random_dag(p, edge_prob=1/(p-1)),
-    'Random (d=2)':       lambda p: random_dag(p, edge_prob=2/(p-1)),
-    'Scale‑free':         gen_scale_free_dag,
-    'Dense progressive':  gen_C_dense_progressive,
-    'Mostly full':        gen_C_mostly_full,
-    'Layered hierarchy':  gen_layered_dag,
-}
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--p-min", type=int, default=P_MIN, help="Minimum graph size (default: %(default)s)")
+    parser.add_argument("--p-max", type=int, default=P_MAX, help="Maximum graph size (default: %(default)s)")
+    parser.add_argument("--n-obs", type=int, default=N_OBS,
+                        help="Simulated documents per graph (default: %(default)s)")
+    parser.add_argument("--reps", type=int, default=N_REPETITIONS,
+                        help="Repetitions per configuration (default: %(default)s)")
+    parser.add_argument("--alphas", nargs="+", type=float, default=ALPHA_VALUES,
+                        help="Significance levels of the independence test (default: %(default)s)")
+    parser.add_argument("--seed", type=int, default=RANDOM_SEED, help="Random seed (default: %(default)s)")
+    parser.add_argument("--n-jobs", type=int, default=-1,
+                        help="Parallel workers, -1 for all cores (default: %(default)s)")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
+                        help="Output CSV path (default: %(default)s)")
+    args = parser.parse_args()
 
-tasks = [(name, gen, alpha)
-         for name, gen in topologies.items()
-         for alpha in ALPHA_VALUES]
+    args.out.parent.mkdir(parents=True, exist_ok=True)
 
-print(f"Running with p∈[{P_MIN},{P_MAX}], N_obs={N_OBS}, default max_cond_set_size, {N_REPETITIONS} reps")
-results_raw = Parallel(n_jobs=-1, verbose=10)(delayed(process_config)(t) for t in tasks)
+    tasks = [
+        (name, gen, alpha, args.p_min, args.p_max, args.n_obs, args.reps, args.seed + i)
+        for i, (name, gen, alpha) in enumerate(
+            (name, gen, alpha) for name, gen in TOPOLOGIES.items() for alpha in args.alphas
+        )
+    ]
 
-results = []
-for topo, alpha, f1m, f1s, nsucc in results_raw:
-    if nsucc > 0:
-        results.append({
-            'Topology': topo, 'alpha': alpha,
-            'F1_mean': f1m, 'F1_std': f1s, 'N_success': nsucc
-        })
+    print(f"Running with p in [{args.p_min},{args.p_max}], N_obs={args.n_obs}, "
+          f"default max_cond_set_size, {args.reps} reps")
+    results_raw = Parallel(n_jobs=args.n_jobs, verbose=10)(delayed(process_config)(t) for t in tasks)
 
-df = pd.DataFrame(results)
+    results = []
+    for topo, alpha, f1m, f1s, nsucc in results_raw:
+        if nsucc > 0:
+            results.append({
+                'Topology': topo, 'alpha': alpha,
+                'F1_mean': f1m, 'F1_std': f1s, 'N_success': nsucc
+            })
 
-z = 1.96
-df['CI_low'] = df['F1_mean'] - z * df['F1_std'] / np.sqrt(df['N_success'])
-df['CI_high'] = df['F1_mean'] + z * df['F1_std'] / np.sqrt(df['N_success'])
+    df = pd.DataFrame(results)
 
-# Print summary
-print("\n" + "="*80)
-print("95% confidence intervals (default max_cond_set_size)")
-print("="*80)
-for alpha in ALPHA_VALUES:
-    sub = df[df['alpha'] == alpha].set_index('Topology')
-    print(f"\n--- alpha = {alpha} ---")
-    print(sub[['CI_low', 'F1_mean', 'CI_high']].to_string())
-print("="*80)
+    z = 1.96
+    df['CI_low'] = df['F1_mean'] - z * df['F1_std'] / np.sqrt(df['N_success'])
+    df['CI_high'] = df['F1_mean'] + z * df['F1_std'] / np.sqrt(df['N_success'])
 
-df.to_csv('pc_validation_default_cond_random_p.csv', index=False)
-print("Results saved.")
+    # Print summary
+    print("\n" + "="*80)
+    print("95% confidence intervals (default max_cond_set_size)")
+    print("="*80)
+    for alpha in args.alphas:
+        sub = df[df['alpha'] == alpha].set_index('Topology')
+        print(f"\n--- alpha = {alpha} ---")
+        print(sub[['CI_low', 'F1_mean', 'CI_high']].to_string())
+    print("="*80)
+
+    df.to_csv(args.out, index=False)
+    print(f"Results saved to {args.out}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,13 +1,22 @@
-# Données (jamais versionnées)
+# Data (never versioned — the CausalityLink corpus is proprietary)
 data/
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .venv/
+venv/
+env/
 
 # Jupyter
 .ipynb_checkpoints/
 
 # Archived (unfair, C-reading) experiment runs — kept on disk, not versioned
 archive/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

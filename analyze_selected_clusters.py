@@ -1,16 +1,26 @@
-"""Combined scatter + log-log regression plot for clusters 5, 9, 11, 13
-and a comprehensive CSV with stats for all clusters.
+"""Combined complexity-vs-velocity plot for the four clusters shown in the paper.
+
+Reproduces Figure "Complexity vs. Velocity across four representative clusters"
+(clusters 5 = Vehicles, 9 = Apparel, 11 = Tech, 13 = Food & Beverage).
+
+Usage:
+    python analyze_selected_clusters.py [--root data/causalitylink_sample]
 """
 
+import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 from complexity_clusters import (
+    DEFAULT_DATA_DIR,
+    DEFAULT_ROOT,
+    DEFAULT_THEMES,
+    PLOTS_DIR,
     compute_cocitation_probability_matrix,
     compute_latent_and_cluster,
+    configure_logging,
     compute_lift_matrix,
     compute_sub_lift_matrix,
     fit_loglog_regression,
@@ -74,17 +84,24 @@ def plot_selected_clusters(cluster_data: dict, out_path: str = "plots/clusters_5
 
 
 def main():
-    np.random.seed(42)
-    root = Path("data/causalitylink_sample")
-    Path("plots").mkdir(exist_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
+                        help="Directory holding the Markers/ and Tree/ AVRO folders (default: %(default)s)")
+    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR,
+                        help="Directory holding the publisher/theme CSVs (default: %(default)s)")
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+
+    configure_logging()
+    np.random.seed(args.seed)
+    PLOTS_DIR.mkdir(exist_ok=True)
 
     print("=== Step 1: Loading and filtering data ===")
-    filtered_marker_df = prepare_filtered_marker_table(root, None)
+    filtered_marker_df = prepare_filtered_marker_table(args.root, None, data_dir=args.data_dir)
 
     print("=== Step 2: Selecting markers ===")
-    list_themes = ["sante", "economie", "sport", "politique", "transport", "information"]
     selected_markers, conv, markers_journals = select_markers_by_theme(
-        filtered_marker_df, list_themes, fraction=1 / 3, seed=42
+        filtered_marker_df, DEFAULT_THEMES, fraction=1 / 3, seed=args.seed
     )
 
     print("=== Step 3: Computing cocitation matrix ===")
@@ -95,9 +112,9 @@ def main():
 
     print("=== Step 5: UMAP + DBSCAN clustering ===")
     _, labels = compute_latent_and_cluster(
-        lift_matrix, selected_markers, markers_journals,
-        out_prefix="plots/projection_2d",
-        eps_dbscan=0.25, min_samples_dbscan=60, seed=42,
+        lift_matrix, selected_markers,
+        out_prefix=str(PLOTS_DIR / "projection_2d"),
+        eps_dbscan=0.25, min_samples_dbscan=60, seed=args.seed,
     )
 
     unique_cluster_ids = sorted(int(l) for l in np.unique(labels) if l != -1)
@@ -129,7 +146,7 @@ def main():
         }
 
     print("=== Step 7: Generating combined plot for clusters 5, 9, 11, 13 ===")
-    plot_selected_clusters(cluster_data, out_path="plots/clusters_5_9_11_13.png")
+    plot_selected_clusters(cluster_data, out_path=str(PLOTS_DIR / "clusters_5_9_11_13.png"))
 
 
 

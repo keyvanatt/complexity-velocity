@@ -28,7 +28,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # headless: never block on plt.show()
 import matplotlib.pyplot as plt
 from scipy import stats
 from tqdm import tqdm
@@ -198,6 +197,10 @@ def plot_summary(df, summary, save_path):
 
 
 def main():
+    # Headless: never block on plt.show(). Set here rather than at import time so
+    # that importing this module from a notebook does not hijack its backend.
+    matplotlib.use("Agg")
+
     Path("results").mkdir(exist_ok=True)
     Path("plots").mkdir(exist_ok=True)
 
@@ -240,7 +243,7 @@ def main():
     for _, r in paired_df.iterrows():
         verdict = "SIGNIFICANT" if r["wilcoxon_p"] < 0.05 else "not significant"
         print(f"  {r['comparison']:<34} "
-              f"Δ={r['mean_diff']:+.3f}  "
+              f"delta={r['mean_diff']:+.3f}  "
               f"95% CI [{r['ci_low']:+.3f}, {r['ci_high']:+.3f}]  "
               f"Wilcoxon p={r['wilcoxon_p']:.2e}  ({verdict})")
         print(f"    wins/losses/ties = "

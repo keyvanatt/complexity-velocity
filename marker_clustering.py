@@ -1,12 +1,26 @@
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
-from sklearn.metrics import adjusted_rand_score
+"""Synthetic benchmark of the clustering step.
+
+Generates a cluster-structured dependency matrix C, simulates documents from it
+and compares three ways of recovering the latent partition:
+
+    - k-means on the standardised [C, C^T] features,
+    - UMAP (euclidean) + HDBSCAN on the same features,
+    - UMAP on the precomputed lift dissimilarity D = log(1 + 1/lift) + HDBSCAN.
+
+Run ``python marker_clustering.py`` for a single illustrative comparison; see
+``cluster_recovery_fair.py`` for the C-blind benchmark reported in the paper.
+"""
+
 from itertools import combinations
-from matplotlib.colors import LogNorm
-import umap
+
 import hdbscan
 import matplotlib.pyplot as plt
 import numpy as np
+import umap
+from matplotlib.colors import LogNorm
+from sklearn.cluster import KMeans
+from sklearn.metrics import adjusted_rand_score
+from sklearn.preprocessing import StandardScaler
 
 
 def generate_cluster_markers(n_clusters, n_markers, p_intra, w_min, w_max, p_inter, rng=None):
@@ -246,7 +260,7 @@ def run_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=None, 
     return (pred_A, ari_A), (pred_B, ari_B), D, (emb_A, emb_B)
 
 
-def assess_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=None, save_path=None):
+def assess_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=None, rng=None, save_path=None):
     """
     Assess two UMAP + HDBSCAN pipelines on the same dependency matrix C and
     plot the 2D embeddings. Thin plotting wrapper around ``run_umap_hdbscan``.
@@ -256,7 +270,7 @@ def assess_umap_hdbscan(C, true_labels, n_sim=5000, min_cluster_size=None, u=Non
     (pred_A, ari_A), (pred_B, ari_B), D
     """
     (pred_A, ari_A), (pred_B, ari_B), D, (emb_A, emb_B) = run_umap_hdbscan(
-        C, true_labels, n_sim=n_sim, min_cluster_size=min_cluster_size, u=u
+        C, true_labels, n_sim=n_sim, min_cluster_size=min_cluster_size, u=u, rng=rng
     )
 
     # ── Plot ──────────────────────────────────────────────────────────────────
@@ -296,7 +310,6 @@ def plot_dissimilarity_matrix(D, pred_labels, title="Dissimilarity matrix", save
                   (use -1 for noise, as returned by HDBSCAN)
     title       : str
     """
-    n = D.shape[0]
     unique_labels = sorted(set(pred_labels))
 
     # build colour map: noise (-1) → grey, clusters → tab10
@@ -470,24 +483,38 @@ def plot_cluster_dissimilarity(D, true_labels, pred_km, pred_A, pred_B, save_pat
 
 if __name__ == "__main__":
     from pathlib import Path
-    Path("plots").mkdir(exist_ok=True)
+
+    plots_dir = Path("plots")
+    plots_dir.mkdir(exist_ok=True)
+    rng = np.random.default_rng(42)
 
     C_clust, labels_clust = generate_cluster_markers(
-    n_clusters=5, n_markers=100,
-    p_intra=0.99, w_min=0.8, w_max=1.0,
-    p_inter=0.01,
+        n_clusters=5, n_markers=100,
+        p_intra=0.99, w_min=0.8, w_max=1.0,
+        p_inter=0.01, rng=rng,
     )
 
-    plot_dependency_matrix(C_clust, title="Cluster-structured C (5 clusters, 100 markers)", save_path="plots/cluster_structured_c.png")
+    plot_dependency_matrix(
+        C_clust,
+        title="Cluster-structured C (5 clusters, 100 markers)",
+        save_path=plots_dir / "cluster_structured_c.png",
+    )
 
-    best_k, pred_km, ari_km = assess_kmeans(C_clust, labels_clust, k_max=10, n_repeats=20, save_path="plots/kmeans_comparison.png")
+    best_k, pred_km, ari_km = assess_kmeans(
+        C_clust, labels_clust, k_max=10, n_repeats=20,
+        save_path=plots_dir / "kmeans_comparison.png",
+    )
 
     (pred_A, ari_A), (pred_B, ari_B), D_lift = assess_umap_hdbscan(
-        C_clust, labels_clust, n_sim=5000, min_cluster_size=None, u=None, save_path="plots/umap_hdbscan_comparison.png"
+        C_clust, labels_clust, n_sim=5000, min_cluster_size=None, u=None, rng=rng,
+        save_path=plots_dir / "umap_hdbscan_comparison.png",
     )
 
     print(f"K-Means       ARI = {ari_km:.3f}  (inferred k = {best_k})")
     print(f"UMAP eucl.    ARI = {ari_A:.3f}")
     print(f"UMAP lift-dis ARI = {ari_B:.3f}")
 
-    plot_cluster_dissimilarity(D_lift, labels_clust, pred_km, pred_A, pred_B, save_path="plots/cluster_dissimilarity_comparison.png")
+    plot_cluster_dissimilarity(
+        D_lift, labels_clust, pred_km, pred_A, pred_B,
+        save_path=plots_dir / "cluster_dissimilarity_comparison.png",
+    )

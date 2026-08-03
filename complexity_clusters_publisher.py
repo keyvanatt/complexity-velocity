@@ -1,6 +1,12 @@
 """Per-publisher complexity vs velocity analysis for a given DBSCAN cluster.
+
+Reproduces the "Complexity vs. velocity by publisher" figure of the paper.
+
+Usage:
+    python complexity_clusters_publisher.py [--cluster-id 12] [--root data/causalitylink_sample]
 """
 
+import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -10,10 +16,15 @@ import pandas as pd
 import polars as pl
 
 from complexity_clusters import (
+    DEFAULT_DATA_DIR,
+    DEFAULT_ROOT,
+    DEFAULT_THEMES,
+    PLOTS_DIR,
     compute_cocitation_probability_matrix,
     compute_latent_and_cluster,
     compute_lift_matrix,
     compute_sub_lift_matrix,
+    configure_logging,
     get_complexity_fast,
     markers_from_cluster,
     prepare_filtered_marker_table,
@@ -152,7 +163,8 @@ def plot_complexity_vs_velocity_publishers(
 
 
 def run_publisher_analysis(
-    root: Path = Path("data/causalitylink_sample"),
+    root: Path = DEFAULT_ROOT,
+    data_dir: Path = DEFAULT_DATA_DIR,
     list_themes: Optional[List[str]] = None,
     marker_fraction: float = 1 / 3,
     cluster_id: int = 12,
@@ -160,13 +172,15 @@ def run_publisher_analysis(
     publishers_to_plot: Optional[List[str]] = None,
     eps_dbscan: float = 0.23,
     min_samples_dbscan: int = 30,
-    out_prefix: str = "plots/complexity_vs_velocity_publishers",
+    out_prefix: Optional[str] = None,
+    seed: int = 42,
 ) -> None:
     """End-to-end pipeline: load data, cluster markers, plot per-publisher complexity.
 
     Args:
-        root: path to the CausalityLink sample directory.
-        list_themes: journal themes used to filter markers (default: 6 broad themes).
+        root: path to the directory holding the ``Markers/`` and ``Tree/`` AVRO folders.
+        data_dir: path to the directory holding the publisher/theme CSVs.
+        list_themes: journal themes used to filter markers (default: DEFAULT_THEMES).
         marker_fraction: fraction of top markers to keep for the global analysis.
         cluster_id: DBSCAN cluster label to analyse per publisher.
         top_n_publishers: number of top publishers to use if ``publishers_to_plot`` is None.
@@ -174,19 +188,20 @@ def run_publisher_analysis(
         eps_dbscan: epsilon parameter for DBSCAN.
         min_samples_dbscan: min_samples parameter for DBSCAN.
         out_prefix: prefix for output PNG files, or ``"SHOW"`` to display inline.
+        seed: seed for UMAP and for the marker sampling.
     """
-    if list_themes is None:
-        list_themes = ["sante", "economie", "sport", "politique", "transport", "information"]
+    list_themes = list_themes if list_themes is not None else DEFAULT_THEMES
+    out_prefix = out_prefix if out_prefix is not None else str(PLOTS_DIR / "complexity_vs_velocity_publishers")
 
-    Path("plots").mkdir(exist_ok=True)
-    filtered_marker_df = prepare_filtered_marker_table(root, None)
+    PLOTS_DIR.mkdir(exist_ok=True)
+    filtered_marker_df = prepare_filtered_marker_table(root, None, data_dir=data_dir)
 
     journaux_themes: Dict[str, str] = (
-        pd.read_csv("data/journaux_themes.csv", index_col=0).squeeze().to_dict()
+        pd.read_csv(Path(data_dir) / "journaux_themes.csv", index_col=0).squeeze().to_dict()
     )
 
     selected_markers, conv, markers_journals = select_markers_by_theme(
-        filtered_marker_df, list_themes, fraction=marker_fraction, top=True
+        filtered_marker_df, list_themes, fraction=marker_fraction, top=True, seed=seed
     )
 
     cocitation_matrix = compute_cocitation_probability_matrix(
@@ -197,10 +212,10 @@ def run_publisher_analysis(
     _, labels = compute_latent_and_cluster(
         lift_matrix,
         selected_markers,
-        markers_journals,
         out_prefix=out_prefix + "_projection" if out_prefix != "SHOW" else "SHOW",
         eps_dbscan=eps_dbscan,
         min_samples_dbscan=min_samples_dbscan,
+        seed=seed,
     )
 
     cluster_markers = markers_from_cluster(labels, cluster_id, selected_markers)
@@ -225,10 +240,29 @@ def run_publisher_analysis(
 
 
 if __name__ == "__main__":
-    np.random.seed(42)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
+                        help="Directory holding the Markers/ and Tree/ AVRO folders (default: %(default)s)")
+    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR,
+                        help="Directory holding the publisher/theme CSVs (default: %(default)s)")
+    parser.add_argument("--cluster-id", type=int, default=12,
+                        help="DBSCAN cluster to break down by publisher (default: %(default)s, the cars cluster)")
+    parser.add_argument("--top-n-publishers", type=int, default=10,
+                        help="Number of most prolific publishers to plot (default: %(default)s)")
+    parser.add_argument("--eps-dbscan", type=float, default=0.23, help="DBSCAN eps (default: %(default)s)")
+    parser.add_argument("--min-samples-dbscan", type=int, default=30,
+                        help="DBSCAN min_samples (default: %(default)s)")
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+
+    configure_logging()
+    np.random.seed(args.seed)
     run_publisher_analysis(
-        root=Path("data/causalitylink_sample"),
-        cluster_id=12,           # cars cluster
-        top_n_publishers=10,
-        out_prefix="plots/complexity_vs_velocity_publishers",
+        root=args.root,
+        data_dir=args.data_dir,
+        cluster_id=args.cluster_id,
+        top_n_publishers=args.top_n_publishers,
+        eps_dbscan=args.eps_dbscan,
+        min_samples_dbscan=args.min_samples_dbscan,
+        seed=args.seed,
     )

@@ -1,0 +1,15 @@
+# Optional dependencies, needed only to re-run the LLM-as-a-judge validation
+# (llm_judge.py). The shipped clusters/cluster_*_llm_classification.csv files
+# were produced with these; the plotting helpers in llm_judge.py work without
+# them.
+#
+#   pip install -r requirements-llm.txt
+#
+# Set HF_HOME to control where model weights are cached.
+
+torch
+transformers
+accelerate
+
+# Only required for --quant 4bit / 8bit
+bitsandbytes

@@ -1,10 +1,20 @@
-import numpy as np
-import networkx as nx
-import matplotlib.pyplot as plt
+"""Synthetic playground for the structural causal model of the paper.
+
+Provides dependency-matrix generators (chain, tree, cliques, hierarchical,
+random DAG, fractal, funnel, skip-hierarchical, dense progressive, mostly-full,
+increasing-rank), the document generator ``simulate_markers``, DAG depth
+computation, and lift/complexity visualisations.
+
+Importable as a module; ``python basevcx.py`` runs an illustrative end-to-end
+simulation with interactive matplotlib windows.
+"""
+
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
 import seaborn as sns
 from tqdm import tqdm
-from itertools import product
 
 
 # ── Dependency matrix generators ──────────────────────────────────────────────

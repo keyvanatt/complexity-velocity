@@ -1,125 +1,204 @@
 # complexity-velocity
 
-Analysis of the complexity and velocity of markers from the CausalityLink database.
+Reference implementation for **"A Causal Model to Explain Complexity of Topics
+and Its Empirical Link with Corpus Velocity"** (Arnaudo, Attarian, Chikhi,
+Lehalle).
 
-## Context
+The code measures the *complexity* of conceptual markers in a text corpus, and
+relates it to the *velocity* at which sources publish about them.
 
-A **marker** is a concept extracted from news articles. This project measures two properties of each marker based on their co-occurrences across articles:
+---
 
-- **Complexity**: degree of interconnection of a marker with others — computed as the sum of lifts towards all other markers.
-- **Velocity**: frequency of isolated appearance of a marker — computed as the inverse of its marginal probability (1/P(marker)).
+## The two quantities
 
-The lift between two markers i and j is defined as:
+A **marker** is a concept (a KPI, an entity, a theme) extracted from news
+articles. Both quantities below are computed from marker co-occurrence across
+articles.
+
+**Lift** between two markers — the pairwise building block, equal to
+`exp(PMI(i, j))`:
 
 ```
-lift(i,j) = P(i,j) / (P(i) * P(j))
+lift(i, j) = P(i, j) / (P(i) · P(j))
 ```
 
-## Project structure
+**Complexity** `C(M_i)` — the *mean* lift of marker `i` against the other
+markers of its own semantic cluster `S(M_i)`:
 
 ```
-complexity-velocity/
-├── causalityTable.py               # Loading AVRO files (markers, tree)
-├── complexity_clusters.py          # Main pipeline: lift, complexity, UMAP, DBSCAN
-├── complexity_clusters_publisher.py # Complexity/velocity analysis per publisher
-├── marker_clustering.py            # Simulation and benchmarking of clustering methods
-├── peter_clark_scm.py              # Causal structure discovery (PC algorithm)
-├── kb_visualisation.py             # Interactive KB tree explorer
-├── basevcx.py                      # Synthetic simulation: C matrix generators, lifts, visualisations
-├── data/
-│   ├── causalitylink_sample/       # CausalityLink data (AVRO)
-│   ├── CausalityLinkPublishers.csv # publisher_id → label mapping
-│   └── journaux_themes.csv         # publisher_label → theme mapping (health, economy, sport…)
-├── plots/                          # Generated figures (created automatically)
-└── requirement.txt
+C(M_i) = mean_{j ∈ S(M_i), j ≠ i}  lift(i, j)
 ```
 
-## Files
+A marker is complex when its presence reliably drags in a rich constellation of
+related concepts; simple when it can stand alone. Complexity is *corpus-relative*
+by construction.
 
-### `causalityTable.py`
-`CausalityTable` class — AVRO data loading utility. Supports full load or month-by-month loading.
+**Velocity** `v(M_i)` — how often the corpus publishes about the marker,
+measured as its marginal probability `P(M_i = 1)`, i.e. the fraction of
+articles mentioning it over the observation window (one month in the paper).
+In code this is read off the diagonal of the lift matrix, since
+`lift(i, i) = 1 / P(i)`.
 
-### `complexity_clusters.py`
-Main pipeline. Steps:
-1. Load and filter markers (excluding country markers, keeping known publishers)
-2. Compute the co-citation matrix then the lift matrix
-3. Compute complexity and velocity scores per marker
-4. UMAP dimensionality reduction on lift dissimilarity, DBSCAN clustering
-5. Visualisations: log-log scatter, boxplots by complexity category, annotated 2D projection
+**Dissimilarity** used for clustering, derived from the lift:
 
-### `complexity_clusters_publisher.py`
-For a given DBSCAN cluster, recomputes the lift matrix separately for each publisher and plots the complexity/velocity scatter with a power-law regression (log-log fit) per publisher.
-
-### `marker_clustering.py`
-Benchmark on synthetic data. Generates a dependency matrix with cluster structure and compares three methods:
-- **K-Means** (k selection by ARI stability)
-- **UMAP + HDBSCAN** with Euclidean distance on [C, Cᵀ]
-- **UMAP + HDBSCAN** with lift dissimilarity (precomputed matrix)
-
-### `peter_clark_scm.py`
-Causal structure discovery via the **PC** algorithm (`causal-learn`, χ² test). For each selected cluster:
-1. Computes local complexities within the cluster
-2. If the cluster exceeds 25 markers, selects the extremes (least and most complex)
-3. Runs the PC algorithm on the binary marker presence matrix per article
-4. Saves a causal graph (NetworkX) and an adjacency matrix sorted by complexity
-
-### `kb_visualisation.py`
-Interactive command-line tool for exploring a marker's hierarchical tree in the knowledge base. Commands:
-- Enter a marker name to visualise its tree
-- Append `#N` to set the depth (e.g. `sport#3`)
-- Enter `__exit__` to quit
-
-### `basevcx.py`
-Synthetic simulation to explore the complexity/velocity relationship on controlled data. Provides:
-- **Dependency matrix generators**: chain, tree, cliques, hierarchical, random, random DAG, fractal, funnel, skip-hierarchical, dense progressive, mostly-full, increasing-rank
-- **`simulate_markers`**: generates binary documents from a dependency matrix C and unary probabilities u
-- **`compute_depth_in_dag`**: depth of each node in the DAG
-- Lift computation, complexity scores (sum of lifts per marker), and associated visualisations (heatmaps, scatterplots, barplots)
-
-Usable as a standalone script (`python basevcx.py`) or as an importable module.
-
-## Expected data
-
-All data must be placed in the `data/` folder:
 ```
-data/
-├── causalitylink_sample/
-│   ├── Markers/      # AVRO files partitioned by year=/month=
-│   ├── Tree/         # AVRO files for the marker hierarchy
-│   └── KB/           # knowledge base (for kb_visualisation)
-├── CausalityLinkPublishers.csv   # columns: publisher, label
-└── journaux_themes.csv           # publisher_label → theme mapping
+D(i, j) = log(1 + 1 / lift(i, j))
 ```
 
-Figures are automatically saved to `plots/` (created on first run).
-
-## Installation
-
-```bash
-pip install -r requirement.txt
-```
-
-Main dependencies: `polars`, `pandas`, `numpy`, `scikit-learn`, `umap-learn`, `hdbscan`, `matplotlib`, `seaborn`, `networkx`, `causal-learn`, `anytree`, `tqdm`.
+---
 
 ## Quick start
 
-```python
-from pathlib import Path
-from complexity_clusters import run_all
-
-filtered_df, markers, conv, journals, lift_matrix, complexities, labels = run_all(
-    root=Path("/Data/rc/causalitylink_sample")
-)
+```bash
+pip install -r requirements.txt jupyterlab
+jupyter lab demo.ipynb
 ```
 
-```python
-from pathlib import Path
-from complexity_clusters_publisher import run_publisher_analysis
+`demo.ipynb` is the entry point. **It runs end to end without the CausalityLink
+corpus**: it builds the metric on synthetic data, reproduces the clustering and
+PC-recovery benchmarks at reduced scale, and then loads the *precomputed*
+corpus results shipped in `clusters/` to reproduce the paper's stylized fact
+and the source-selection rule. Runtime is about two minutes on a laptop, and it
+is committed with its outputs so it can also just be read on GitHub.
 
-run_publisher_analysis(
-    root=Path("/Data/rc/causalitylink_sample"),
-    cluster_id=12,
-    top_n_publishers=10,
-    out_prefix="complexity_vs_velocity_publishers",
-)
+---
+
+## Repository layout
+
 ```
+complexity-velocity/
+├── demo.ipynb                       # ← start here: runnable walkthrough, no proprietary data needed
+│
+├── causalityTable.py                # AVRO loading utility for the CausalityLink dump
+├── complexity_clusters.py           # main pipeline: lift → complexity/velocity → UMAP + DBSCAN
+├── complexity_clusters_publisher.py # same, broken down per publisher
+├── analyze_selected_clusters.py     # combined figure for clusters 5, 9, 11, 13
+├── peter_clark_scm.py               # within-cluster causal graph recovery (PC algorithm)
+├── llm_judge.py                     # LLM-as-a-judge cross-validation of the metric
+├── kb_visualisation.py              # interactive knowledge-base tree explorer
+│
+├── basevcx.py                       # synthetic SCM: C generators, document simulation, lifts
+├── marker_clustering.py             # clustering benchmark helpers (k-means / UMAP+HDBSCAN)
+├── cluster_recovery_fair.py         # C-blind cluster-recovery benchmark  ← the one in the paper
+├── cluster_recovery_experiment.py   # earlier single-regime variant (also holds the stat helpers)
+├── cluster_recovery_sweep.py        # earlier difficulty sweep, methods allowed to read C
+├── empirical_pc_tests.py            # PC skeleton-recovery F1 across nine DAG topologies
+│
+├── clusters/                        # precomputed per-cluster results on the CausalityLink corpus
+├── plots/                           # generated figures (created on first run)
+├── results/                         # generated CSVs (created on first run)
+├── requirements.txt
+└── requirements-llm.txt             # optional, for re-running llm_judge.py
+```
+
+### Which script produces which paper result
+
+| Paper element | Script | Command |
+|---|---|---|
+| Cluster-recovery table & figure (`ARI` vs `p_inter`) | `cluster_recovery_fair.py` | `python cluster_recovery_fair.py` |
+| PC skeleton `F1` confidence intervals | `empirical_pc_tests.py` | `python empirical_pc_tests.py --p-min 12 --p-max 12 --n-obs 30000 --reps 20` |
+| 2D projection, per-cluster stats, complexity–velocity grid | `complexity_clusters.py` | `python complexity_clusters.py --root <data> --all-clusters` |
+| Four-cluster complexity–velocity figure | `analyze_selected_clusters.py` | `python analyze_selected_clusters.py --root <data>` |
+| Per-publisher complexity–velocity figure | `complexity_clusters_publisher.py` | `python complexity_clusters_publisher.py --root <data> --cluster-id 12` |
+| Intra-cluster PC dependency graphs | `peter_clark_scm.py` | `python peter_clark_scm.py --root <data> --clusters 5 11` |
+| LLM-judge CDF figure | `llm_judge.py` | `python llm_judge.py` |
+| Synthetic complexity/velocity counterfactuals | `basevcx.py` | `python basevcx.py` |
+
+Every script exposes `--help`. Scripts marked `<data>` need the CausalityLink
+corpus (see below); the others run on synthetic data only.
+
+---
+
+## Data
+
+The **CausalityLink** corpus is proprietary and is *not* distributed with this
+repository. `data/` is git-ignored. Scripts that consume it expect:
+
+```
+data/
+├── causalitylink_sample/
+│   ├── Markers/                  # AVRO, partitioned as year=YYYY/month=MM/
+│   ├── Tree/                     # AVRO, marker ontology (used to drop orphan and country markers)
+│   └── KB/                       # knowledge base (kb_visualisation.py only)
+├── CausalityLinkPublishers.csv   # columns: publisher, label
+└── journaux_themes.csv           # publisher_label → theme (sante, economie, sport, …)
+```
+
+Point the scripts elsewhere with `--root` (AVRO folders) and `--data-dir`
+(the two CSVs).
+
+**What is shipped instead:** `clusters/` contains the precomputed outputs of the
+full pipeline on the January 2025 snapshot — per-cluster marker complexity and
+velocity, LLM-judge scores, the aggregate statistics table, and the published
+figures. `demo.ipynb` reads these directly, so the empirical claims of the paper
+can be checked without access to the corpus.
+
+| File | Contents |
+|---|---|
+| `clusters/all_clusters_stats.csv` | one row per cluster: `n_kpi`, `n_articles`, mean intra/external lift, `beta0`, `beta1` + 95% CI, `r2`, Kendall `tau`, Pearson `rho`, complexity range |
+| `clusters/cluster_<id>_all_markers.csv` | every marker of the cluster with its `complexity` and `velocity` |
+| `clusters/cluster_<id>_top_bottom.csv` | the 10 least and 10 most complex markers |
+| `clusters/cluster_<id>_llm_classification.csv` | adds `llm_score` (1–10) and `llm_category` (per-cluster tercile) |
+| `clusters/llm_classification_summary.csv` | per-cluster tercile counts and mean LLM score |
+
+---
+
+## Pipeline
+
+`complexity_clusters.py --all-clusters` runs, in order:
+
+1. **Load and filter.** Read the monthly `Markers` AVRO snapshot; drop markers
+   absent from the `Tree` ontology and markers carrying a country; join
+   publisher labels and journal themes.
+2. **Select markers.** Keep the most frequent fraction (default 1/3) of markers
+   appearing in the retained journal themes.
+3. **Co-citation matrix.** Count article-level co-occurrences for every marker
+   pair, normalise by the article count. *This is the slow step.*
+4. **Lift, complexity, velocity.** Lift from the co-citation probabilities;
+   complexity as the mean off-diagonal lift; velocity from the diagonal.
+5. **Cluster.** UMAP on the lift-derived dissimilarity (precomputed metric),
+   then DBSCAN on the 2D embedding. Each cluster is then re-analysed on its own
+   sub-lift matrix, which is what makes complexity a *within-cluster* quantity.
+
+Downstream, `peter_clark_scm.py` recovers the causal skeleton inside a cluster
+with the PC algorithm, and `llm_judge.py` cross-checks the resulting complexity
+ordering against an independent LLM rater.
+
+### Note on the clustering dissimilarity
+
+The synthetic benchmarks (`marker_clustering.py`, `cluster_recovery_fair.py`)
+use the dissimilarity exactly as defined in the paper, `D = log(1 + 1/lift)`.
+The corpus clustering in `compute_latent_and_cluster` uses a variant with a
+row-wise offset, `D = log(1 + 1/(lift + ε) − P(i))`, which damps very frequent
+markers; this is the form that produced the published 21-cluster partition and
+is documented in the function's docstring.
+
+---
+
+## Reproducibility
+
+- Every script takes `--seed` (default 42) and passes it to UMAP, DBSCAN
+  sampling and the synthetic generators.
+- `empirical_pc_tests.py` defaults to the exploratory configuration
+  (`p ∈ [12, 20]`, `N_obs = 9000`, 15 repetitions). The paper's table uses
+  `p = 12`, `N_obs = 30000`, 20 replications — pass the flags shown in the
+  table above.
+- `cluster_recovery_fair.py` is the benchmark reported in the paper: no method
+  is allowed to read the generating matrix `C`, all three see only the lift
+  estimated from simulated documents. `cluster_recovery_sweep.py` and
+  `cluster_recovery_experiment.py` are the earlier variants where the baselines
+  read `C` directly; they are kept for provenance, and
+  `cluster_recovery_fair.py` imports the bootstrap/t-interval helpers from the
+  latter.
+
+---
+
+## Citation
+
+```
+Baptiste Arnaudo, Keyvan Attarian, Salah Chikhi, Charles-Albert Lehalle.
+A Causal Model to Explain Complexity of Topics and Its Empirical Link with
+Corpus Velocity.
+```
+
+The authors thank Olav Laudy and Pierre Haren for their help with the data.

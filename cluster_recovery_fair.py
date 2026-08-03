@@ -10,7 +10,7 @@ method is allowed to read the generating matrix C**. Instead, every trial:
   4. clusters markers using representations derived *only* from that estimate.
 
 This mirrors the real pipeline (complexity_clusters.py), where there is no
-ground-truth C — lift computed from observed co-occurrence is the only signal.
+ground-truth C - lift computed from observed co-occurrence is the only signal.
 All three methods share the same C-blind estimated lift; the only differences
 are the algorithm and whether the "complexity" log-dissimilarity transform is
 used:
@@ -30,7 +30,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats
 from tqdm import tqdm
@@ -185,6 +184,10 @@ def plot_sweep(summary, save_path):
 
 
 def main():
+    # Headless: never block on plt.show(). Set here rather than at import time so
+    # that importing this module from a notebook does not hijack its backend.
+    matplotlib.use("Agg")
+
     Path("results").mkdir(exist_ok=True)
     Path("plots").mkdir(exist_ok=True)
 
@@ -221,8 +224,8 @@ def main():
         pk = 1.0 if np.allclose(dk, 0) else stats.wilcoxon(dk).pvalue
         pe = 1.0 if np.allclose(de, 0) else stats.wilcoxon(de).pvalue
         print(f"  p_inter={p_inter:.2f}: "
-              f"vs kmeans  Δ={dk.mean():+.3f} (p={pk:.2e}) | "
-              f"vs umap_eucl  Δ={de.mean():+.3f} (p={pe:.2e})")
+              f"vs kmeans  delta={dk.mean():+.3f} (p={pk:.2e}) | "
+              f"vs umap_eucl  delta={de.mean():+.3f} (p={pe:.2e})")
     print("=" * 78)
     print("Wrote: results/cluster_recovery_fair.csv, "
           "results/cluster_recovery_fair_summary.csv, "

@@ -1,0 +1,19 @@
+# Core dependencies for the complexity-velocity pipeline and the demo notebook.
+#
+#   to open demo.ipynb : pip install jupyterlab
+#   LLM-as-a-judge     : pip install -r requirements-llm.txt
+
+matplotlib
+numpy
+pandas
+polars
+seaborn
+scikit-learn
+scipy
+tqdm
+joblib
+umap-learn
+hdbscan
+networkx
+causal-learn
+anytree

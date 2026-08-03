@@ -1,3 +1,9 @@
+"""Main pipeline: lift matrix, complexity/velocity, UMAP + DBSCAN clustering.
+
+Run ``python complexity_clusters.py --help`` for the command-line interface.
+"""
+
+import argparse
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -15,7 +21,17 @@ from umap import UMAP  # pip install umap-learn
 
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# Default locations, all relative to the repository root so the pipeline runs
+# out of the box from a fresh clone.
+DEFAULT_DATA_DIR = Path("data")
+DEFAULT_ROOT = DEFAULT_DATA_DIR / "causalitylink_sample"
+PLOTS_DIR = Path("plots")
+CLUSTERS_DIR = Path("clusters")
+
+# Journal themes retained for marker selection (labels as they appear in
+# data/journaux_themes.csv).
+DEFAULT_THEMES = ["sante", "economie", "sport", "politique", "transport", "information"]
 
 
 def compute_cocitation_probability_matrix(
@@ -90,15 +106,28 @@ def get_complexity_fast(lift_matrix: np.ndarray, conv: Dict[str, int], marker: s
     return acc / float(n - 1)
 
 
-def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] = None) -> pl.DataFrame:
+def prepare_filtered_marker_table(
+    path: Path,
+    list_themes: Optional[List[str]] = None,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    year: int = 2025,
+    month: int = 1,
+) -> pl.DataFrame:
     """Load tables and prepare the filtered marker DataFrame enriched with publisher info.
 
-    Expects files under `path` and CSVs `CausalityLinkPublishers.csv`, `journaux_themes.csv` in working dir.
-    Returns a Polars DataFrame ready for further analysis.
+    Args:
+        path: directory holding the ``Markers/`` and ``Tree/`` AVRO folders.
+        list_themes: optional journal themes to keep (``None`` keeps all).
+        data_dir: directory holding ``CausalityLinkPublishers.csv`` and
+            ``journaux_themes.csv``.
+        year, month: the monthly snapshot to load from ``Markers/``.
+
+    Returns:
+        A Polars DataFrame ready for further analysis.
     """
     logger.info("Loading Markers AVRO files from %s...", path / "Markers")
     markerTable = CausalityTable(path / "Markers")
-    markerTable.load_one_mounth(year=2025, month=1)
+    markerTable.load_one_mounth(year=year, month=month)
     logger.info("Markers loaded: %d rows", len(markerTable.df))
 
     logger.info("Loading Tree AVRO files from %s...", path / "Tree")
@@ -106,9 +135,10 @@ def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] =
     treeTable.load_data(date_parsing=False)
     logger.info("Tree loaded: %d rows", len(treeTable.df))
 
-    logger.info("Loading publishers and journal themes CSV...")
-    publishers = pl.read_csv("/users/eleves-b/2023/keyvan.attarian/complexity-velocity/data/CausalityLinkPublishers.csv")
-    journaux_themes = pd.read_csv("/users/eleves-b/2023/keyvan.attarian/complexity-velocity/data/journaux_themes.csv", index_col=0).to_dict()["theme"]
+    data_dir = Path(data_dir)
+    logger.info("Loading publishers and journal themes CSV from %s...", data_dir)
+    publishers = pl.read_csv(data_dir / "CausalityLinkPublishers.csv")
+    journaux_themes = pd.read_csv(data_dir / "journaux_themes.csv", index_col=0).to_dict()["theme"]
     logger.info("Publishers: %d entries, journal themes: %d entries", len(publishers), len(journaux_themes))
 
     logger.info("Initial marker table: %d entries, %d markers, %d articles", 
@@ -167,7 +197,7 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
     )
     logger.info("Selected markers from %d publishers", selected_markers_df["publishers_label"].explode().n_unique())
     keep_n = max(1, int(len(selected_markers_df) * fraction))
-    logger.info("Total distinct markers in themes: %d — keeping top %d (fraction=%.2f)", len(selected_markers_df), keep_n, fraction)
+    logger.info("Total distinct markers in themes: %d - keeping top %d (fraction=%.2f)", len(selected_markers_df), keep_n, fraction)
     if top:
         selected_markers_df = selected_markers_df.sort(["marker_count", "marker"], descending=[True, False]).head(keep_n)
     else:
@@ -250,7 +280,7 @@ def plot_complexity_vs_velocity(
     # --- regression & stats ---
     reg = fit_loglog_regression(complexities_values, velocities)
     logger.info(
-        "Log-log regression: beta1=%.4f  95%%CI=[%.4f, %.4f]  R²=%.4f  "
+        "Log-log regression: beta1=%.4f  95%%CI=[%.4f, %.4f]  R2=%.4f  "
         "Pearson r=%.4f (p=%.2e)  Kendall tau=%.4f (p=%.2e)  n=%d",
         reg["beta1"], reg["beta1_ci"][0], reg["beta1_ci"][1], reg["r2"],
         reg["pearson_r"], reg["pearson_p"],
@@ -304,9 +334,20 @@ def plot_complexity_vs_velocity(
 
 
 
-def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.ndarray, markers_journals: np.ndarray, out_prefix: str = "projection_2d",
+def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.ndarray, out_prefix: str = "projection_2d",
                                eps_dbscan: float = 0.10, min_samples_dbscan: int = 20, seed: int = 42) -> Tuple[np.ndarray, np.ndarray]:
     """Compute latent 2D embedding (UMAP) from lift matrix-derived distances and run DBSCAN clustering.
+
+    The dissimilarity fed to UMAP is
+
+        D[i,j] = log(1 + 1/(lift[i,j] + eps) - p_i)
+
+    symmetrised and shifted to be non-negative, where ``p_i = 1 / lift[i,i]``
+    is the marginal probability of marker ``i``. The ``- p_i`` term is a
+    row-wise offset that damps the contribution of very frequent markers; it is
+    the variant used to produce the published clustering of the corpus. The
+    plain form ``log(1 + 1/lift)`` used in the synthetic benchmarks lives in
+    ``marker_clustering.run_umap_hdbscan`` and ``cluster_recovery_fair``.
 
     Saves projection and projection with DBSCAN into PNG files with given prefix.
     Returns embedding and cluster labels.
@@ -359,10 +400,9 @@ def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.nda
         rel_idx = idxs[int(np.argmin(np.linalg.norm(X_latent[idxs] - centroid, axis=1)))]
         plt.annotate(f"{int(lab)} : {selected_markers[rel_idx]}", xy=(X_latent[rel_idx, 0], X_latent[rel_idx, 1]), xytext=(4, 4), textcoords="offset points", fontsize=6)
 
-    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
     plt.xlabel("Dim 1")
     plt.ylabel("Dim 2")
-    plt.title(f"Projection 2D avec Clustering DBSCAN (n_clusters = {n_clusters})")
+    plt.title(f"2D projection with DBSCAN clustering (n_clusters = {n_clusters})")
     plt.tight_layout()
     if out_prefix != "SHOW":
         plt.savefig(f"{out_prefix}_dbscan.png")
@@ -389,21 +429,21 @@ def compute_complexity_df(complexities: Dict[str, float]) -> pd.DataFrame:
     complexities_df.index.name = 'marker'
     return complexities_df
 
-def top_lifters(marker: str, lift_matrix: np.ndarray, conv: Dict[str, int], complexity_df: pd.DataFrame, top_n: int = 15) -> List[Tuple[str, float]]:
+def top_lifters(marker: str, lift_matrix: np.ndarray, conv: Dict[str, int], top_n: int = 15) -> List[Tuple[str, float]]:
     """Return the top N markers with highest lift with respect to the given marker."""
     if marker not in conv:
         return []
     ind = conv[marker]
     lifts = lift_matrix[ind, :]
-    top_indices = np.argsort(lifts)[-top_n-1:][::-1]
+    index_to_marker = list(conv.keys())
+    top_indices = np.argsort(lifts)[-top_n - 1:][::-1]
     if ind in top_indices:
         top_indices = top_indices[top_indices != ind]
     else:
         top_indices = top_indices[:-1]
-    top_markers = [(list(conv.keys())[i], lifts[i]) for i in top_indices ]
-    return top_markers
+    return [(index_to_marker[i], float(lifts[i])) for i in top_indices]
 
-def save_top_bottom_csv(complexities: Dict[str, float], out_path: str, top_n: int = 10) -> pd.DataFrame:
+def save_top_bottom_csv(complexities: Dict[str, float], out_path, top_n: int = 10) -> pd.DataFrame:
     """Save a CSV with the top_n lowest and top_n highest markers by complexity.
 
     Returns the combined DataFrame.
@@ -427,12 +467,14 @@ def plot_cluster_distributions(
     lift_matrix: np.ndarray,
     conv: Dict[str, int],
     labels: np.ndarray,
-    global_reg: Dict,
 ) -> None:
     """Dot plots (vertical layout) of beta1, kendall tau, pearson r per cluster.
 
-    Also saves a comprehensive CSV with all cluster statistics.
+    Also saves ``clusters/all_clusters_stats.csv`` and, for each cluster,
+    ``clusters/cluster_<id>_all_markers.csv``.
     """
+    CLUSTERS_DIR.mkdir(exist_ok=True)
+    PLOTS_DIR.mkdir(exist_ok=True)
     rows: List[Dict] = []
 
     ids_to_run = sorted(int(l) for l in np.unique(labels) if l != -1)
@@ -482,7 +524,7 @@ def plot_cluster_distributions(
             "marker": cluster_markers,
             "complexity": c_vals,
             "velocity": v_vals,
-        }).to_csv(f"clusters/cluster_{cluster_id}_all_markers.csv", index=False)
+        }).to_csv(CLUSTERS_DIR / f"cluster_{cluster_id}_all_markers.csv", index=False)
 
         rows.append({
             "cluster_id": cluster_id,
@@ -508,7 +550,7 @@ def plot_cluster_distributions(
         })
 
     # save CSV
-    csv_path = "clusters/all_clusters_stats.csv"
+    csv_path = CLUSTERS_DIR / "all_clusters_stats.csv"
     df_stats = pd.DataFrame(rows).set_index("cluster_id")
     df_stats.to_csv(csv_path)
     logger.info("Saved cluster stats CSV to %s (%d clusters)", csv_path, len(df_stats))
@@ -538,8 +580,9 @@ def plot_cluster_distributions(
         ax.grid(axis="x", alpha=0.3)
 
     fig.tight_layout(pad=2.0)
-    fig.savefig("plots/distributions_beta1_kendall_pearson.png", dpi=150)
-    logger.info("Saved dot plot to plots/distributions_beta1_kendall_pearson.png")
+    dot_plot_path = PLOTS_DIR / "distributions_beta1_kendall_pearson.png"
+    fig.savefig(dot_plot_path, dpi=150)
+    logger.info("Saved dot plot to %s", dot_plot_path)
     plt.close(fig)
 
 
@@ -548,13 +591,15 @@ def plot_all_clusters_grid(
     selected_markers: np.ndarray,
     labels: np.ndarray,
     n_cols: int = 4,
-    out_path: str = "plots/all_clusters_complexity_velocity.png",
+    out_path: Optional[Path] = None,
 ) -> None:
     """Grid of complexity vs velocity scatter + fit line for every cluster.
 
     Layout: n_cols columns, ceil(n_clusters / n_cols) rows.
     No stats annotations — scatter and fit only.
     """
+    out_path = Path(out_path) if out_path is not None else PLOTS_DIR / "all_clusters_complexity_velocity.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     cluster_ids = sorted(int(l) for l in np.unique(labels) if l != -1)
     n_clusters = len(cluster_ids)
     n_rows = (n_clusters + n_cols - 1) // n_cols
@@ -611,29 +656,44 @@ def plot_all_clusters_grid(
 
 
 def run_all(
-    root: Path = Path("data/causalitylink_sample"),
+    root: Path = DEFAULT_ROOT,
+    data_dir: Path = DEFAULT_DATA_DIR,
     cluster_ids: Optional[List[int]] = None,
     all_clusters: bool = False,
+    list_themes: Optional[List[str]] = None,
+    marker_fraction: float = 1 / 3,
+    eps_dbscan: float = 0.25,
+    min_samples_dbscan: int = 60,
     seed: int = 42,
 ) -> Tuple:
     """Main pipeline: load data, select markers, compute matrices, plot and cluster.
 
     Args:
-        root: Path to data root directory.
-        cluster_ids: Explicit list of DBSCAN cluster IDs to analyse.
-        all_clusters: If True, run sub-analysis on every cluster found by DBSCAN (noise -1 excluded).
-                      Overrides cluster_ids.
+        root: path to the directory holding the ``Markers/`` and ``Tree/`` AVRO folders.
+        data_dir: path to the directory holding the publisher/theme CSVs.
+        cluster_ids: explicit list of DBSCAN cluster IDs to analyse.
+        all_clusters: if True, run the sub-analysis on every cluster found by
+            DBSCAN (noise -1 excluded). Overrides ``cluster_ids``.
+        list_themes: journal themes used to select markers (default: DEFAULT_THEMES).
+        marker_fraction: fraction of the most frequent markers to keep.
+        eps_dbscan, min_samples_dbscan: DBSCAN parameters on the UMAP embedding.
+        seed: seed for UMAP and for the marker sampling.
+
+    Returns:
+        ``(filtered_marker_df, selected_markers, conv, markers_journals,
+        lift_matrix, complexities, reg, labels)``
     """
-    Path("plots").mkdir(exist_ok=True)
+    PLOTS_DIR.mkdir(exist_ok=True)
+    CLUSTERS_DIR.mkdir(exist_ok=True)
+    list_themes = list_themes if list_themes is not None else DEFAULT_THEMES
 
     logger.info("=== Step 1/5 : Loading and filtering data ===")
-    list_themes = ["sante", "economie", "sport", "politique", "transport", "information"]
-    filtered_marker_df = prepare_filtered_marker_table(root, None)
+    filtered_marker_df = prepare_filtered_marker_table(root, None, data_dir=data_dir)
 
     logger.info("=== Step 2/5 : Selecting markers ===")
-    selected_markers, conv, markers_journals = select_markers_by_theme(filtered_marker_df, list_themes, fraction=1 / 3, seed=seed)
+    selected_markers, conv, markers_journals = select_markers_by_theme(filtered_marker_df, list_themes, fraction=marker_fraction, seed=seed)
 
-    logger.info("=== Step 3/5 : Computing cocitation matrix (%d markers) — this is the slow step ===", len(selected_markers))
+    logger.info("=== Step 3/5 : Computing cocitation matrix (%d markers) - this is the slow step ===", len(selected_markers))
     cocitation_matrix = compute_cocitation_probability_matrix(selected_markers, filtered_marker_df, conv)
 
     logger.info("=== Step 4/5 : Computing lift matrix and stats ===")
@@ -641,10 +701,13 @@ def run_all(
     logger.info("Lift matrix computed (%dx%d)", lift_matrix.shape[0], lift_matrix.shape[1])
 
     logger.info("Plotting global complexity vs velocity...")
-    complexities, reg = plot_complexity_vs_velocity(lift_matrix, conv, selected_markers, out_prefix="plots/complexity_vs_velocity")
+    complexities, reg = plot_complexity_vs_velocity(lift_matrix, conv, selected_markers, out_prefix=str(PLOTS_DIR / "complexity_vs_velocity"))
 
     logger.info("=== Step 5/5 : UMAP + DBSCAN clustering ===")
-    _, labels = compute_latent_and_cluster(lift_matrix, selected_markers, markers_journals, out_prefix="plots/projection_2d", eps_dbscan=0.25, min_samples_dbscan=60, seed=seed)
+    _, labels = compute_latent_and_cluster(
+        lift_matrix, selected_markers, out_prefix=str(PLOTS_DIR / "projection_2d"),
+        eps_dbscan=eps_dbscan, min_samples_dbscan=min_samples_dbscan, seed=seed,
+    )
 
     ids_to_run: List[int] = sorted(int(l) for l in np.unique(labels) if l != -1) if all_clusters else (cluster_ids or [])
     if ids_to_run:
@@ -655,35 +718,69 @@ def run_all(
             if len(cluster_markers) < 10:
                 logger.warning("Cluster %d has fewer than 10 markers (%d), skipping.", cluster_id, len(cluster_markers))
                 continue
-            logger.info("Cluster %d: %d markers — computing sub-lift matrix...", cluster_id, len(cluster_markers))
+            logger.info("Cluster %d: %d markers - computing sub-lift matrix...", cluster_id, len(cluster_markers))
             sub_lift_matrix, sub_conv = compute_sub_lift_matrix(cluster_markers, filtered_marker_df)
             logger.info("Sub-lift matrix computed (%dx%d)", sub_lift_matrix.shape[0], sub_lift_matrix.shape[1])
 
-            plot_prefix = f"plots/cluster_{cluster_id}_complexity_vs_velocity"
+            plot_prefix = CLUSTERS_DIR / f"cluster_{cluster_id}_complexity_vs_velocity"
             sub_complexities, _ = plot_complexity_vs_velocity(
-                sub_lift_matrix, sub_conv, cluster_markers, out_prefix=plot_prefix
+                sub_lift_matrix, sub_conv, cluster_markers, out_prefix=str(plot_prefix)
             )
 
-            csv_path = f"plots/cluster_{cluster_id}_top_bottom.csv"
-            save_top_bottom_csv(sub_complexities, csv_path)
+            save_top_bottom_csv(sub_complexities, CLUSTERS_DIR / f"cluster_{cluster_id}_top_bottom.csv")
             logger.info("Cluster %d done.", cluster_id)
-
-    logger.info("=== All done. Plots saved in plots/ ===")
 
     if all_clusters or ids_to_run:
         logger.info("=== Plotting cluster distributions ===")
-        plot_cluster_distributions(filtered_marker_df, selected_markers, lift_matrix, conv, labels, reg)
+        plot_cluster_distributions(filtered_marker_df, selected_markers, lift_matrix, conv, labels)
         logger.info("=== Plotting all-clusters grid ===")
         plot_all_clusters_grid(filtered_marker_df, selected_markers, labels)
+
+    logger.info("=== All done. Figures in %s/, per-cluster tables in %s/ ===", PLOTS_DIR, CLUSTERS_DIR)
 
     return filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels
 
 
-if __name__ == "__main__":
+def configure_logging(level: int = logging.INFO) -> None:
+    """Send this package's progress logs to stderr.
 
-    root = Path("/Data/KAT/causalitylink")
-    np.random.seed(42)
-    filtered_marker_df, selected_markers, conv, markers_journals, lift_matrix, complexities, reg, labels = run_all(
-        root=root,
-        all_clusters=True,  # tous les clusters ; ou cluster_ids=[0, 1, 2] pour une sélection
+    Called from the ``__main__`` blocks rather than at import time, so importing
+    the module from a notebook or another script leaves logging untouched.
+    """
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
+                        help="Directory holding the Markers/ and Tree/ AVRO folders (default: %(default)s)")
+    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR,
+                        help="Directory holding CausalityLinkPublishers.csv and journaux_themes.csv (default: %(default)s)")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--all-clusters", action="store_true",
+                       help="Run the per-cluster sub-analysis on every DBSCAN cluster")
+    group.add_argument("--cluster-ids", nargs="+", type=int,
+                       help="Run the sub-analysis only on these DBSCAN cluster IDs")
+    parser.add_argument("--marker-fraction", type=float, default=1 / 3,
+                        help="Fraction of the most frequent markers to keep (default: %(default)s)")
+    parser.add_argument("--eps-dbscan", type=float, default=0.25, help="DBSCAN eps (default: %(default)s)")
+    parser.add_argument("--min-samples-dbscan", type=int, default=60,
+                        help="DBSCAN min_samples (default: %(default)s)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: %(default)s)")
+    return parser
+
+
+if __name__ == "__main__":
+    args = build_arg_parser().parse_args()
+    configure_logging()
+    np.random.seed(args.seed)
+    run_all(
+        root=args.root,
+        data_dir=args.data_dir,
+        cluster_ids=args.cluster_ids,
+        all_clusters=args.all_clusters,
+        marker_fraction=args.marker_fraction,
+        eps_dbscan=args.eps_dbscan,
+        min_samples_dbscan=args.min_samples_dbscan,
+        seed=args.seed,
     )

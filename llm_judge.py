@@ -8,15 +8,20 @@ Input:  clusters/cluster_*_all_markers.csv  (marker, complexity, velocity)
 Output: clusters/cluster_*_llm_classification.csv  (adds llm_score, llm_category columns)
         clusters/llm_classification_summary.csv
 
+Requires the optional LLM dependencies:  pip install -r requirements-llm.txt
+Set HF_HOME to control where model weights are cached.
+
 Usage:
     python llm_judge.py [--model mistralai/Ministral-8B-Instruct-2410] [--cluster-ids 0 1 2]
+
+The plotting helpers (``plot_cdfs``, ``plot_density_small_multiples``) only need
+pandas/matplotlib and can be imported without torch or transformers installed.
 """
 
 import argparse
 import json
 import logging
 import re
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -24,33 +29,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# packages installed in /tmp/pypackages
-sys.path.insert(0, "/tmp/pypackages")
-
-import os
-os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
-os.environ.setdefault("TRANSFORMERS_CACHE", "/tmp/hf_cache")
-
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "mistralai/Ministral-8B-Instruct-2410"
 
-CATEGORY_COLORS = {
-    "simple": "green",
-    "intermediate": "orange",
-    "complex": "red",
-    None: "lightgray",
-}
-
 
 def load_model(model_name: str, quant: str = "none"):
     """quant='4bit' loads the model in NF4 (bitsandbytes) — lets a ~32B model fit in ~18 GB VRAM,
-    e.g. a 24 GB RTX A5000. quant='8bit' ~= half precision footprint. 'none' = bf16."""
+    e.g. a 24 GB RTX A5000. quant='8bit' ~= half precision footprint. 'none' = bf16.
+
+    torch/transformers are imported lazily so that the plotting helpers in this
+    module stay usable without the heavy optional dependencies."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+
     logger.info("Loading model %s (quant=%s) ...", model_name, quant)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -143,7 +135,7 @@ def run_batch(pipe, prompt: str, max_new_tokens: int = 1024) -> Dict[str, float]
 
     result = extract_json(text)
     if result is None:
-        logger.error("JSON parsing failed — full output (%d chars):\n%s", len(text), text)
+        logger.error("JSON parsing failed - full output (%d chars):\n%s", len(text), text)
         return {}
 
     scores = {}
@@ -194,7 +186,7 @@ def classify_cluster(pipe, cluster_id: int, path: Path) -> pd.DataFrame:
     n_total = len(df)
 
     markers_data = df[["marker", "complexity"]].to_dict("records")
-    logger.info("  Cluster %d — scoring %d markers in a single call", cluster_id, n_total)
+    logger.info("  Cluster %d - scoring %d markers in a single call", cluster_id, n_total)
 
     prompt = build_prompt(markers_data)
     max_new = max(1024, n_total * 15)
@@ -212,7 +204,7 @@ def classify_cluster(pipe, cluster_id: int, path: Path) -> pd.DataFrame:
         level(
             "Cluster %d: %d/%d markers unscored (%.0f%%)%s",
             cluster_id, n_missing, n_total, missing_rate * 100,
-            " — likely truncated output" if missing_rate > 0.1 else "",
+            " - likely truncated output" if missing_rate > 0.1 else "",
         )
 
     dist = df["llm_category"].value_counts().to_dict()
@@ -434,6 +426,7 @@ def main():
     parser.add_argument("--cluster-ids", nargs="*", type=int, help="Specific cluster IDs (default: all)")
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     clusters_dir = Path(args.clusters_dir)
 
     if args.cluster_ids is not None:
