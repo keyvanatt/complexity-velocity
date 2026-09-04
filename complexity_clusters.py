@@ -171,7 +171,8 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
     if top:
         selected_markers_df = selected_markers_df.sort(["marker_count", "marker"], descending=[True, False]).head(keep_n)
     else:
-        selected_markers_df = selected_markers_df.sample(keep_n, shuffle=True, seed=seed)
+        # group_by does not preserve row order, so sort first to make `seed` reproducible
+        selected_markers_df = selected_markers_df.sort("marker").sample(keep_n, shuffle=True, seed=seed)
     markers_journals = np.array(selected_markers_df["publishers_label"].to_list(), dtype=object)
     selected_markers = np.array(selected_markers_df["marker"].to_list())
     conv = {selected_markers[k]: int(k) for k in range(len(selected_markers))}

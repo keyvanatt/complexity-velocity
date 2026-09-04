@@ -26,6 +26,7 @@ complexity-velocity/
 ├── peter_clark_scm.py              # Causal structure discovery (PC algorithm)
 ├── kb_visualisation.py             # Interactive KB tree explorer
 ├── basevcx.py                      # Synthetic simulation: C matrix generators, lifts, visualisations
+├── top_lifters_pair.py             # Lift of every marker against one or several reference markers
 ├── data/
 │   ├── causalitylink_sample/       # CausalityLink data (AVRO)
 │   ├── CausalityLinkPublishers.csv # publisher_id → label mapping
@@ -78,6 +79,14 @@ Synthetic simulation to explore the complexity/velocity relationship on controll
 
 Usable as a standalone script (`python basevcx.py`) or as an importable module.
 
+### `top_lifters_pair.py`
+Command-line tool listing the markers with the highest lift against one or several reference
+markers. Streams over `data/dataset.csv` instead of building the full n x n lift matrix:
+
+```bash
+python top_lifters_pair.py daihatsu_brand automotive_chip --top-n 10
+```
+
 ## Expected data
 
 All data must be placed in the `data/` folder:
@@ -92,6 +101,16 @@ data/
 ```
 
 Figures are automatically saved to `plots/` (created on first run).
+
+## Tests
+
+```bash
+pytest                 # everything
+pytest -m "not slow"   # skips the tests needing data/dataset.csv
+```
+
+Tests marked `slow` rebuild the cluster-5 lift matrix from `data/dataset.csv` and check it
+reproduces `clusters/cluster_5_all_markers.csv`.
 
 ## Installation
 

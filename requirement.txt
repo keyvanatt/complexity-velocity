@@ -11,3 +11,4 @@ hdbscan
 networkx
 causal-learn
 anytree
+pytest
